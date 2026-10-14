@@ -2,31 +2,112 @@
 
 See how your Claude Code session is doing, and act on it in one click.
 
-```
-──────────────────────────────────────────────────────────────────────────────
-ctx ██░░░░░░░░ 20% 195k/1M · cache 97% · 5h 20% resets 1h52m · 7d 7% resets 5d03h12m · $5.03
-[ Summarize ] [ Handoff ]
-❯
-```
+![The Pulse bar above the Claude Code prompt](../../docs/images/pulse/bar.png)
 
-- **Usage bar** above the prompt: context fill, prompt cache hit rate of the
-  last request, rate limits with reset times, session cost. Green, yellow from
-  your alarm level, red 15 points above it.
-- **Summarize** compacts the conversation (same as `/compact`).
-- **Handoff** asks Claude to write a handoff note, then offers
-  `Clear & continue`: a fresh conversation that starts by reading the note.
+Pulse adds a bar above the prompt. It shows how full the context is, how well
+the prompt cache works, how much of your rate limits you have used and when
+they reset, and what the session has cost. Colours warn you before the context
+runs out, and two buttons act on it: **Summarize** and **Handoff**.
 
 ## Install
+
+In a Claude Code session:
 
 ```
 /plugin marketplace add maciejploskonka/claude-plugins
 /plugin install pulse@maciejploskonka
 ```
 
-A setup wizard opens:
-choose the parts you want, what the bar shows, and when to warn you. On a
-narrow terminal the wizard waits; a row above the prompt offers
-`Set up` or `Use defaults`.
+Pick `user` as the scope to have Pulse in every project. The setup wizard opens
+on its own (see [Setup](#setup)).
+
+## The bar
+
+```
+ctx ██░░░░░░░░ 21% 207k/1M · cache 98% · 5h 12% resets 2h05m · 7d 16% resets 4d03h12m · $1.23
+[ Summarize ] [ Handoff ]
+```
+
+| Part | What it means |
+| --- | --- |
+| `ctx ██░░ 21% 207k/1M` | How full the context window is: meter, percent, tokens used of the window. |
+| `cache 98%` | Prompt cache hit rate of Claude's last request. High is good: a cold cache bills the whole prompt again. |
+| `5h 12% resets 2h05m` | The 5-hour rate limit: share used, time until it resets. |
+| `7d 16% resets 4d03h12m` | The weekly rate limit, the same way. |
+| `$1.23` | What this session has cost so far. |
+| `[ Summarize ]` | Compacts the conversation, as `/compact` does. |
+| `[ Handoff ]` | Writes a handoff note and starts fresh from it (see [Handoff](#handoff)). |
+
+Every part can be turned off in the wizard. When the window is narrow, whole
+parts move to the next row; the buttons always keep a row of their own. They
+hide while Claude is working.
+
+### Colours
+
+The colours follow your Claude Code theme. The alarm level is yours to pick
+(50, 60, 75 or 90%; 75% by default).
+
+| | Green | Yellow | Red |
+| --- | --- | --- | --- |
+| Context | below the alarm | from the alarm | from the alarm + 15 |
+| Cache | 80% and up | 50–79% | below 50% |
+| Rate limits | white below 70% | 70–89% | 90% and up |
+
+From the alarm level, `Handoff` turns into the highlighted button, and Pulse
+shows one reminder: `Context 78% full — time for a handoff (/pulse-handoff).`
+
+Labels, separators, reset times and the cost stay grey, so the numbers that
+matter stand out.
+
+## Handoff
+
+A long session fills the context, and compaction loses detail. A handoff keeps
+it: Claude writes down where the work stands, and a fresh conversation picks up
+from that note.
+
+![Handoff saved, with Clear & continue](../../docs/images/pulse/handoff-saved.png)
+
+1. Press `Handoff` (or run `/pulse-handoff`). Claude writes a note: the goal,
+   what is done, the current state (files, branches, commands), open problems,
+   the exact next steps, and anything learned the hard way.
+2. When the note is saved, the row offers `[ Clear & continue ]` and
+   `[ Keep going ]`.
+3. `Clear & continue` clears the conversation and asks the new one to read the
+   note. It starts by saying in two lines where you are.
+
+Notes are plain Markdown files, so you can read, edit or share them:
+
+- `~/.claude/handoffs/<project>-<date>-<time>.md` (default, outside your
+  projects), or
+- `<project>/.claude/handoffs/...` if you pick the project folder. Then add
+  `.claude/handoffs/` to `.gitignore`, so notes are not committed.
+
+## Setup
+
+On first launch Pulse opens a short wizard in a pane next to the session. It
+needs only the arrow keys and Enter: every step starts on `Next`, so pressing
+Enter takes the defaults, and Up reaches the answers.
+
+![Setup, step 1: which parts of Pulse you want](../../docs/images/pulse/setup-features.png)
+
+1. **Features**: the usage bar, handoff.
+2. **Bar**: meter style (bar or number), and which parts and buttons to show,
+   with a live preview.
+3. **Alarm**: when to warn you that the context is filling up.
+4. **Handoff**: where the notes go.
+
+![Setup, step 2: what the bar shows, with a live preview](../../docs/images/pulse/setup-bar.png)
+
+`Finish` saves your answers and says so:
+
+![Setup done: Pulse is set up, you're ready to roll](../../docs/images/pulse/setup-done.png)
+
+Change your answers any time with `/pulse-setup`. On a narrow terminal the
+wizard waits, and a row above the prompt offers `[ Set up ]` and
+`[ Use defaults ]`.
+
+Wizard keys: `↑` `↓` move, `Enter` picks, `n` next, `b` back, `f` finish,
+`Esc` closes without saving.
 
 ## Commands
 
@@ -38,14 +119,21 @@ narrow terminal the wizard waits; a row above the prompt offers
 
 ## FAQ
 
-**The `[-]` at the right of the bar?** Claude Code draws it, not Pulse. It
-collapses the whole band; Pulse cannot change it.
+**What is the `[-]` at the right of the bar?** Claude Code draws it, not Pulse.
+It folds the whole area above the prompt; Pulse cannot change it.
 
-**Handoff notes in the project?** If you pick `.claude/handoffs` in the
-project, add `.claude/handoffs/` to `.gitignore`.
+**There is an empty row under the buttons.** Claude Code keeps it for its own
+short notices (the effort level, for one). It is not Pulse's.
 
-**Update:** `/plugin marketplace update maciejploskonka`. Restart Claude Code if the new version does not show.
+**The cache shows `–`.** It fills in after Claude's first answer.
+
+**Where are my settings?** In Claude Code's plugin storage, per user. They
+survive restarts and updates. `/pulse-reset` brings back the defaults.
+
+**How do I update?** `/plugin marketplace update maciejploskonka`, then
+restart Claude Code if the new version does not show.
 
 ## Changelog
 
-- 0.1.0 — first release: usage bar, handoff, setup wizard.
+- **0.1.1**: Rate limits show placeholders until the first answer.
+- **0.1.0**: First release.
