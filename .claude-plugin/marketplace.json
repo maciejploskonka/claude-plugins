@@ -1,0 +1,13 @@
+{
+  "name": "maciejploskonka",
+  "description": "Claude Code plugins by Maciej Ploskonka",
+  "owner": {
+    "name": "Maciej Ploskonka"
+  },
+  "plugins": [
+    {
+      "name": "pulse",
+      "source": "./plugins/pulse"
+    }
+  ]
+}

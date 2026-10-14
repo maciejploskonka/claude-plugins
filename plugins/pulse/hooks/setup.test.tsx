@@ -1,0 +1,305 @@
+import { describe, expect, test } from 'claude-code/testing'
+import type { Mounted } from 'claude-code/testing'
+
+import { defaults } from './config'
+import { BAND, PANE_PROPS, START, SURFACES, engine, runCommand } from './test-engine'
+
+const PANE = { component: 'Pane', requestId: 'pulse-setup', props: PANE_PROPS } as const
+
+// The wizard as a terminal or desktop draws it.
+type Wizard = Mounted<'terminal' | 'desktop', 'Pane'>
+
+// Next's key names its step (next-features, next-bar, ...): press whichever is drawn.
+const nextKey = async (pane: Wizard) =>
+  (await pane.findAll({ type: 'Button' })).find(b => b.key?.startsWith('next-'))?.key ?? 'next-missing'
+const next = async (pane: Wizard) => pane.press({ key: await nextKey(pane) })
+
+describe('setup wizard', () => {
+  for (const surface of SURFACES) {
+    test(`first launch opens it; choices apply on Finish and persist (${surface})`, async ($, on) => {
+      const f = engine(on)
+      await $.session.start(START)
+      expect(f.opened).toEqual(['pulse-setup'])
+
+      const pane = (await $.ui.mount({ plugin: 'pulse', surface, ...PANE } as never)) as Wizard
+      expect(await pane.find({ text: /step 1\/4/ })).toBeDefined()
+
+      // Handoff off: the details step drops out.
+      await pane.press({ key: 'f-handoff' })
+      expect(await pane.find({ text: /\[ \] Handoff/ })).toBeDefined()
+      expect(await pane.find({ text: /step 1\/3/ })).toBeDefined()
+
+      await next(pane)
+      await pane.press({ key: 'b-cost' })
+      await pane.press({ key: 'meter-number' })
+      expect(await pane.find({ text: /\$1\.23/ })).toBeUndefined()
+      expect((await pane.find({ key: 'preview' }))?.text).not.toMatch(/█/)
+
+      await pane.press({ key: 'back' })
+      expect(await pane.find({ text: /step 1\/3/ })).toBeDefined()
+      await next(pane)
+      await next(pane)
+      await pane.press({ key: 'alarm-50' })
+      expect(await pane.find({ text: /Yellow from 50%, red from 65%\./ })).toBeDefined()
+      await pane.press({ key: 'finish' })
+      // A result screen, not an instant close: it says it worked and what is on.
+      expect(f.closed).not.toContain('pulse-setup')
+      expect(await pane.find({ text: /✓ Pulse is set up\. You're ready to roll\./ })).toBeDefined()
+      expect(await pane.find({ text: /On: usage bar \(warns at 50%\)/ })).toBeDefined()
+      expect(await pane.find({ text: /Change it any time with \/pulse-setup\./ })).toBeDefined()
+      expect((await pane.find({ type: 'Button', key: 'done-close' }))?.props?.hotkey).toBe('c')
+      await pane.press({ key: 'done-close' })
+      expect(f.closed).toContain('pulse-setup')
+      await pane.unmount()
+
+      const band = await $.ui.mount({ plugin: 'pulse', surface, ...BAND })
+      expect(await band.find({ text: /ctx 42%/ })).toBeDefined()
+      expect(await band.find({ text: /\$1\.23/ })).toBeUndefined()
+      expect(await band.find({ text: /not set up/ })).toBeUndefined()
+      await band.unmount()
+
+      // A new session reads the saved answers and does not ask again.
+      await $.session.start(START)
+      expect(f.opened).toEqual(['pulse-setup'])
+      expect((await runCommand($, 'pulse-handoff')).text).toBe('Handoff is turned off. Turn it on in /pulse-setup.')
+    })
+
+    test(`"Use defaults" from the row saves and stops asking (${surface})`, async ($, on) => {
+      const f = engine(on)
+      await $.session.start(START)
+      const band = await $.ui.mount({ plugin: 'pulse', surface, ...BAND })
+      expect(await band.find({ text: /Pulse is not set up yet/ })).toBeDefined()
+
+      await band.press({ key: 'setup-defaults' })
+      expect(await band.find({ text: /not set up/ })).toBeUndefined()
+      await band.unmount()
+
+      await $.session.start(START)
+      expect(f.opened).toEqual(['pulse-setup'])
+    })
+  }
+
+  test('closing without Finish saves nothing and keeps the row', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await pane.press({ key: 'f-bar' })
+    // Left without Finish (the kit cannot raise the person's close mark).
+    await pane.unmount()
+
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    expect(await band.find({ text: /ctx/ })).toBeDefined()
+    expect(await band.find({ text: /Pulse is not set up yet/ })).toBeDefined()
+    await band.unmount()
+  })
+
+  test('/pulse-setup starts from the saved config', async ($, on) => {
+    const c = defaults()
+    const f = engine(on, { config: { ...c, setupDone: true, features: { ...c.features, handoff: false } } })
+    await $.session.start(START)
+    expect(f.opened).toEqual([])
+
+    expect((await runCommand($, 'pulse-setup')).text).toBe('Pulse setup opened.')
+    expect(f.opened).toEqual(['pulse-setup'])
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    expect(await pane.find({ text: /\[ \] Handoff/ })).toBeDefined()
+    expect(await pane.find({ text: /\[x\] Usage bar/ })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('project note folder shows the .gitignore hint', async ($, on) => {
+    engine(on, { config: { ...defaults(), setupDone: true } })
+    await $.session.start(START)
+    await runCommand($, 'pulse-setup')
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await next(pane)
+    await next(pane)
+    await next(pane)
+    expect(await pane.find({ text: /step 4\/4/ })).toBeDefined()
+    expect(await pane.find({ text: /\.gitignore/ })).toBeUndefined()
+    await pane.press({ key: 'handoff-dir-project' })
+    expect(await pane.find({ text: /Add \.claude\/handoffs\/ to \.gitignore/ })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('/pulse-reset restores defaults and stays set up', async ($, on) => {
+    const c = defaults()
+    const f = engine(on, { config: { ...c, setupDone: true, features: { ...c.features, bar: false } } })
+    await $.session.start(START)
+    expect((await runCommand($, 'pulse-reset')).text).toBe('Pulse settings were reset to defaults.')
+
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    expect(await band.find({ text: /ctx/ })).toBeDefined()
+    expect(await band.find({ text: /not set up/ })).toBeUndefined()
+    await band.unmount()
+    expect(f.opened).toEqual([])
+  })
+
+  test('"Use defaults" also closes the waiting wizard pane', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    await band.press({ key: 'setup-defaults' })
+    expect(f.closed).toContain('pulse-setup')
+    await band.unmount()
+  })
+
+  test('Esc closes the wizard, and it opens with the keyboard', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    expect(f.openArgs).toEqual([{ id: 'pulse-setup', closeOnEscape: true, focus: true }])
+  })
+
+  test('Next, Back and Finish have letter keys, toggles none; the focus starts on Next', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    const button = (key: string) => pane.find({ type: 'Button', key })
+    const hotkey = async (key: string) => (await button(key))?.props?.hotkey
+    expect((await button('next-features'))?.props?.autoFocus).toBe(true)
+    expect((await button('f-bar'))?.props?.autoFocus).toBeUndefined()
+    // Digits are the engine's (band surveys) and leave the pane: no digit keys.
+    expect([await hotkey('f-bar'), await hotkey('f-handoff')]).toEqual([undefined, undefined])
+    expect(await hotkey('next-features')).toBe('n')
+    expect(await pane.find({ text: /^↑↓ move · Enter picks · n next · Esc closes$/ })).toBeDefined()
+
+    await next(pane)
+    expect(await hotkey('back')).toBe('b')
+    expect(await hotkey('b-tokens')).toBeUndefined()
+    expect(await pane.find({ text: /^\d: / })).toBeUndefined()
+    await next(pane)
+    await next(pane)
+    expect(await hotkey('finish')).toBe('f')
+    await pane.unmount()
+  })
+
+  test('/pulse-setup asks for the keyboard again once the command is done', async ($, on) => {
+    const f = engine(on, { config: { ...defaults(), setupDone: true } })
+    await $.session.start(START)
+    await runCommand($, 'pulse-setup')
+    expect(f.openArgs).toHaveLength(1)
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+    await f.clock.settle()
+    expect(f.openArgs).toHaveLength(2)
+    expect(f.openArgs[1]?.focus).toBe(true)
+    expect(f.toasts).toEqual([])
+  })
+
+  test('when the keyboard is refused, a toast says how to reach the wizard', async ($, on) => {
+    const f = engine(on, { config: { ...defaults(), setupDone: true } })
+    await $.session.start(START)
+    await runCommand($, 'pulse-setup')
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: false, isPlaced: true }]
+    await f.clock.settle()
+    expect(f.toasts).toEqual(['Press ctrl+x then Tab to use the Pulse setup with the keyboard.'])
+  })
+
+  test('no dropdowns: every choice is a column of options Up and Down reach', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await next(pane)
+    expect(await pane.find({ type: 'Select' })).toBeUndefined()
+    // One option per line: Up and Down reach each, no Left or Right needed.
+    expect((await pane.find({ key: 'meter' }))?.props?.flexDirection).toBe('column')
+    expect((await pane.find({ type: 'Button', key: 'meter-bar' }))?.props?.label).toMatch(/^\(•\) Bar/)
+    expect((await pane.find({ type: 'Button', key: 'meter-number' }))?.props?.label).toMatch(/^\( \) Number only/)
+    await next(pane)
+    expect(await pane.find({ type: 'Select' })).toBeUndefined()
+    // Back above Next, stacked: Down reaches both without Left or Right.
+    const nav = await pane.find({ key: 'nav' })
+    expect(nav?.props?.flexDirection).toBe('column')
+    expect(nav?.text).toMatch(/Back.*Next/)
+    await pane.press({ key: 'alarm-90' })
+    expect((await pane.find({ type: 'Button', key: 'alarm-90' }))?.props?.label).toMatch(/^\(•\) 90%/)
+    expect(await pane.find({ text: /Yellow from 90%, red from 95%\./ })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('arrows cannot walk out of the wizard; they still move inside it', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const person = { kind: 'person' } as const
+    await $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', origin: person } as never)
+    expect(f.focusMoves).toEqual([])
+    await $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element: 'next', origin: person } as never)
+    expect(f.focusMoves).toEqual(['next'])
+  })
+
+  test('when saving fails, Finish says so and offers to try again', async ($, on) => {
+    const f = engine(on)
+    f.storeError = 'disk full'
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    for (let n = 0; n < 3; n += 1) await next(pane)
+    await pane.press({ key: 'finish' })
+    expect(await pane.find({ text: /✗ Pulse could not save your settings: disk full/ })).toBeDefined()
+    expect(f.closed).toEqual([])
+
+    f.storeError = null
+    await pane.press({ key: 'done-retry' })
+    expect(await pane.find({ text: /✓ Pulse is set up/ })).toBeDefined()
+    await pane.unmount()
+  })
+
+  // Moving the ring to Next on each step is $.ui.focus, which the test kit
+  // cannot resolve ("no implementation for ui.focus"): checked by hand.
+  test('Next and Finish are where the focus starts on their step', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    for (let n = 0; n < 3; n += 1) {
+      expect((await pane.find({ type: 'Button', key: await nextKey(pane) }))?.props?.autoFocus).toBe(true)
+      await next(pane)
+    }
+    expect((await pane.find({ type: 'Button', key: 'finish' }))?.props?.autoFocus).toBe(true)
+    expect((await pane.find({ type: 'Button', key: 'back' }))?.props?.autoFocus).toBeUndefined()
+    await pane.unmount()
+  })
+
+  test('hints and the step counter use the bar\'s grey', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    expect((await pane.find({ type: 'Text', text: /step 1\/4/ }))?.props?.color).toBe('inactive')
+    expect((await pane.find({ type: 'Text', text: /↑↓ move/ }))?.props?.color).toBe('inactive')
+    expect((await pane.find({ type: 'Text', text: /↑↓ move/ }))?.props?.dimColor).toBe(true)
+    await next(pane)
+    await next(pane)
+    expect((await pane.find({ type: 'Text', text: /^Preview:$/ }))?.props?.color).toBe('inactive')
+    expect((await pane.find({ type: 'Text', text: /Yellow from/ }))?.props?.color).toBe('inactive')
+    await pane.unmount()
+  })
+
+  // A key only the new step draws: $.ui.focus waits for that drawing
+  // instead of landing on the old step's button.
+  test('Next has its own key on each step', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    const keys: string[] = []
+    for (let n = 0; n < 3; n += 1) {
+      keys.push(await nextKey(pane))
+      await next(pane)
+    }
+    expect(keys).toEqual(['next-features', 'next-bar', 'next-alarm'])
+    expect(await pane.find({ type: 'Button', key: 'finish' })).toBeDefined()
+    await pane.unmount()
+  })
+
+  test('a fresh session previews every ticked item with sample numbers', async ($, on) => {
+    const f = engine(on)
+    f.ctx = { percent: undefined, tokens: undefined }
+    f.limits = []
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await next(pane)
+    const preview = (await pane.find({ key: 'preview' }))?.text ?? ''
+    expect(preview).toMatch(/ctx █+░+ 21% 42k\/200k/)
+    expect(preview).toMatch(/cache 98%/)
+    expect(preview).toMatch(/5h \d+% resets \d/)
+    expect(preview).toMatch(/7d \d+% resets \d/)
+    expect(preview).toMatch(/\$/)
+    await pane.unmount()
+  })
+})
