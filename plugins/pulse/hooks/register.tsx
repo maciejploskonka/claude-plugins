@@ -142,7 +142,14 @@ const barRow = async (
   const pieces: Piece[] = [textPiece('ctx', ctxParts)]
   if (cfg.bar.cache) pieces.push(textPiece('cache', [[GREY, 'cache '], [cacheColor(cache), pct(cache)]]))
   if (cfg.bar.limits) {
-    for (const l of u?.limits ?? []) {
+    const known = u?.limits ?? []
+    // Limits arrive with the first request; until then, placeholders.
+    if (known.length === 0) {
+      for (const kind of ['five_hour', 'seven_day']) {
+        pieces.push(textPiece(kind, [[GREY, `${LIMIT_NAMES[kind]} `], [GREY, '–']]))
+      }
+    }
+    for (const l of known) {
       const reset = cfg.bar.resets ? resetsIn(l.resetsAt, now) : ''
       const parts: [string, string][] = [
         [GREY, `${LIMIT_NAMES[l.kind] ?? l.kind} `],

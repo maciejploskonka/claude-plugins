@@ -51,10 +51,12 @@ describe('usage bar', () => {
       const f = engine(on, READY)
       f.ctx.percent = undefined
       f.ctx.tokens = undefined
+      f.limits = []
       await $.session.start(START)
 
       const ui = await $.ui.mount({ plugin: 'pulse', surface, ...BAND })
-      expect(await ui.find({ text: /ctx ░░░░░░░░░░ – · cache –/ })).toBeDefined()
+      // Limits arrive with the first request; until then, placeholders.
+      expect(await ui.find({ text: /ctx ░░░░░░░░░░ – · cache – · 5h – · 7d – · \$1\.23/ })).toBeDefined()
       expect((await ui.find({ text: /^–$/ }))?.props?.color).toBe('inactive')
       await ui.unmount()
     })
