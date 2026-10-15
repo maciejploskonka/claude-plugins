@@ -42,6 +42,20 @@ Every part can be turned off in the wizard. When the window is narrow, whole
 parts move to the next row; the buttons always keep a row of their own. They
 hide while Claude is working.
 
+### Point a button at one part of the session
+
+Type in the prompt box, do not press Enter, then press a button. Pulse uses
+what you typed as the focus:
+
+- `Summarize`: the summary keeps what you named, as `/compact <text>` does.
+  For example: `keep the auth refactor, drop the CSS detour`.
+- `Handoff`: the note covers only that part of the work. For example:
+  `only the billing export bug`.
+
+Pulse then empties the prompt box, so the text is not sent as a message too,
+and says `Used your typed text as the focus.` With nothing typed, the buttons
+work as before.
+
 ### Colours
 
 The colours follow your Claude Code theme. The alarm level is yours to pick
@@ -69,7 +83,9 @@ from that note.
 
 1. Press `Handoff`. Claude writes a note: the goal,
    what is done, the current state (files, branches, commands), open problems,
-   the exact next steps, and anything learned the hard way.
+   the exact next steps, and anything learned the hard way. To hand off only
+   part of the session, type that part in the prompt box first (see
+   [Point a button at one part of the session](#point-a-button-at-one-part-of-the-session)).
 2. When the note is saved, the row offers `[ Clear & continue ]` and
    `[ Keep going ]`.
 3. `Clear & continue` clears the conversation and asks the new one to read the
@@ -115,7 +131,7 @@ Wizard keys: `↑` `↓` move, `Enter` picks, `n` next, `b` back, `f` finish,
 | --- | --- |
 | `/pulse-setup` | Change what Pulse shows and how |
 | `/pulse-reset` | Restore the default settings |
-| `/pulse-handoff` | Write a handoff note and offer to start fresh. Only there when the bar shows no `Handoff` button (bar or button turned off) |
+| `/pulse-handoff [focus]` | Write a handoff note and offer to start fresh; text after the command is its focus. Only there when the bar shows no `Handoff` button (bar or button turned off) |
 
 ## FAQ
 
@@ -135,6 +151,9 @@ restart Claude Code if the new version does not show.
 
 ## Changelog
 
+- **0.2.0**: Text typed in the prompt box, not sent, becomes the focus of the next `Summarize` or `Handoff`:
+  what the summary keeps, or what the note is about. Nothing typed: the buttons work as before.
+  `/pulse-handoff <focus>` takes its focus after the command.
 - **0.1.2**: In a short setup pane, Up and Down move between choices instead of scrolling.
   Each setup step starts at its top item, so the step number shows; the bar step uses two columns.
   In a short pane the title, Back/Next and the key hints stay put and only the middle scrolls.

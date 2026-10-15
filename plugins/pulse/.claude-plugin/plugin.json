@@ -1,6 +1,6 @@
 {
   "name": "pulse",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "A live bar above the prompt (context, cache, limits, cost) and a handoff flow, set up once with a short wizard",
   "author": {
     "name": "Maciej Ploskonka"
