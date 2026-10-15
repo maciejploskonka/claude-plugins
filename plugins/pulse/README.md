@@ -54,7 +54,7 @@ The colours follow your Claude Code theme. The alarm level is yours to pick
 | Rate limits | white below 70% | 70–89% | 90% and up |
 
 From the alarm level, `Handoff` turns into the highlighted button, and Pulse
-shows one reminder: `Context 78% full — time for a handoff (/pulse-handoff).`
+shows one reminder: `Context 78% full — time for a handoff (press Handoff below).`
 
 Labels, separators, reset times and the cost stay grey, so the numbers that
 matter stand out.
@@ -67,7 +67,7 @@ from that note.
 
 ![Handoff saved, with Clear & continue](../../docs/images/pulse/handoff-saved.png)
 
-1. Press `Handoff` (or run `/pulse-handoff`). Claude writes a note: the goal,
+1. Press `Handoff`. Claude writes a note: the goal,
    what is done, the current state (files, branches, commands), open problems,
    the exact next steps, and anything learned the hard way.
 2. When the note is saved, the row offers `[ Clear & continue ]` and
@@ -114,8 +114,8 @@ Wizard keys: `↑` `↓` move, `Enter` picks, `n` next, `b` back, `f` finish,
 | Command | Does |
 | --- | --- |
 | `/pulse-setup` | Change what Pulse shows and how |
-| `/pulse-handoff` | Write a handoff note and offer to start fresh |
 | `/pulse-reset` | Restore the default settings |
+| `/pulse-handoff` | Write a handoff note and offer to start fresh. Only there when the bar shows no `Handoff` button (bar or button turned off) |
 
 ## FAQ
 
@@ -139,5 +139,6 @@ restart Claude Code if the new version does not show.
   Each setup step starts at its top item, so the step number shows; the bar step uses two columns.
   In a short pane the title, Back/Next and the key hints stay put and only the middle scrolls.
   The bar preview shows only in the tall setup pane docked beside the transcript, not in the short one above the prompt.
+  `/pulse-handoff` is listed only when there is no `Handoff` button to press.
 - **0.1.1**: Rate limits show placeholders until the first answer.
 - **0.1.0**: First release.

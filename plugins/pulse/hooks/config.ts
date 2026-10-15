@@ -49,6 +49,10 @@ export const steps = (c: Config): Step[] => {
   return list
 }
 
+// Whether a handoff needs its slash command: handoff is on, but the bar
+// shows no Handoff button to press (the bar is off, or the button is).
+export const needsHandoffCommand = (c: Config) => c.features.handoff && !(c.features.bar && c.bar.buttons.handoff)
+
 // Next's key names its step (Finish on the last), so a focus move waits for
 // the new step's button rather than landing on the old one before the redraw.
 export const nextKeyOf = (list: Step[], n: number) => (n >= list.length - 1 ? 'finish' : `next-${list[n]}`)

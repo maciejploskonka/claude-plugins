@@ -65,12 +65,35 @@ describe('handoff', () => {
     await turnEnds($)
     f.ctx.percent = 70
     await turnEnds($)
-    expect(f.toasts).toEqual(['Context 61% full — time for a handoff (/pulse-handoff).'])
+    expect(f.toasts).toEqual(['Context 61% full — time for a handoff (press Handoff below).'])
 
     await $.classic.SessionStart({ source: 'clear' })
     await turnEnds($)
     expect(f.toasts.length).toBe(2)
   })
+
+  test('with no Handoff button on the bar, the toast names the command', async ($, on) => {
+    const f = engine(on, ready({ alarm: 60, features: { bar: false, handoff: true } }))
+    await $.session.start(START)
+    f.ctx.percent = 61
+    await turnEnds($)
+    expect(f.toasts).toEqual(['Context 61% full — time for a handoff (/pulse-handoff).'])
+  })
+
+  // /pulse-handoff is offered only where no Handoff button is there to press.
+  const noButton = { ...defaults().bar, buttons: { summarize: true, handoff: false } }
+  for (const [name, store, isOffered] of [
+    ['the bar shows the Handoff button', ready(), false],
+    ['the bar is off', ready({ features: { bar: false, handoff: true } }), true],
+    ['the Handoff button is off', ready({ bar: noButton }), true],
+    ['handoff is off', ready({ features: { bar: true, handoff: false } }), false],
+  ] as const) {
+    test(`/pulse-handoff ${isOffered ? 'is' : 'is not'} offered when ${name}`, async ($, on) => {
+      const f = engine(on, store)
+      await $.session.start(START)
+      expect(f.registered.includes('pulse-handoff')).toBe(isOffered)
+    })
+  }
 
   test('turned off: the command answers a hint and nothing is asked', async ($, on) => {
     const c = defaults()

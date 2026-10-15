@@ -40,6 +40,8 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
     files: new Set<string>(),
     submitted: [] as string[],
     commands: [] as string[],
+    /** Slash commands Pulse registered, in order. */
+    registered: [] as string[],
     toasts: [] as string[],
     opened: [] as string[],
     openArgs: [] as { id: string; closeOnEscape?: true; focus?: true }[],
@@ -102,7 +104,10 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never
   })
   on('fs.exists', (_$, e) => ({ value: f.files.has(e.path) }))
-  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  on('command.register', (_$, e) => {
+    f.registered.push(e.name)
+    return { value: { command: e.name } }
+  })
   on('command.run', (_$, e) => {
     f.commands.push(e.command)
     return { text: '' }

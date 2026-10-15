@@ -3,7 +3,19 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Alarm, CacheTotals, Config, Draft, SetupResult, UsageSnapshot } from '../types'
 import { GREY, TRACK, cacheColor, ctxColor, limitColor, redLevel } from './colors'
-import { ALARMS, HINT, STORE_KEY, defaults, focusOrder, fromRaw, isObj, nextKeyOf, startKey, steps } from './config'
+import {
+  ALARMS,
+  HINT,
+  STORE_KEY,
+  defaults,
+  focusOrder,
+  fromRaw,
+  isObj,
+  needsHandoffCommand,
+  nextKeyOf,
+  startKey,
+  steps,
+} from './config'
 import {
   LIMIT_NAMES,
   RESUME_PROMPT,
@@ -48,6 +60,18 @@ const loadConfig = async ($: EngineInterface): Promise<Config> => {
 const saveConfig = async ($: EngineInterface, cfg: Config) => {
   await $.store.set(STORE_KEY, cfg)
   await update($, config, () => cfg)
+  await offerHandoffCommand($, cfg)
+}
+
+// /pulse-handoff only where no Handoff button is there to press. The engine
+// cannot take a command back, so one turned unneeded stays till the next
+// session, where it is not registered; it still works meanwhile.
+const offerHandoffCommand = async ($: EngineInterface, cfg: Config) => {
+  if (!needsHandoffCommand(cfg)) return
+  await $.command.register({
+    name: 'pulse-handoff',
+    description: 'Write a handoff note, then clear and continue from it',
+  })
 }
 
 // ── Usage bar ───────────────────────────────────────────────────────────
@@ -294,7 +318,8 @@ const handoffOnTurnEnd = async ($: EngineInterface, cfg: Config) => {
   if (phase === 'idle' && percent !== null && percent >= cfg.alarm && !(await read($, handoffReminded))) {
     // Once per conversation; the lit Handoff button carries it from here.
     await update($, handoffReminded, () => true)
-    $.ui.toast(`Context ${percent}% full — time for a handoff (/pulse-handoff).`)
+    const how = needsHandoffCommand(cfg) ? '/pulse-handoff' : 'press Handoff below'
+    $.ui.toast(`Context ${percent}% full — time for a handoff (${how}).`)
   }
 }
 
@@ -412,10 +437,7 @@ export const register: Register = on => {
     const cfg = await loadConfig($)
     await $.command.register({ name: 'pulse-setup', description: 'Choose what Pulse shows and how' })
     await $.command.register({ name: 'pulse-reset', description: 'Restore Pulse’s default settings' })
-    await $.command.register({
-      name: 'pulse-handoff',
-      description: 'Write a handoff note, then clear and continue from it',
-    })
+    await offerHandoffCommand($, cfg)
     await refreshUsage($)
     // Stops on reload, and session.start fires again then.
     $.clock.every(REFRESH_MS, () => void refreshUsage($))
