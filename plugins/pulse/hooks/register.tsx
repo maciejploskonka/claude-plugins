@@ -183,7 +183,8 @@ const barRow = async (
     }
   }
 
-  return (
+  // With its height, which the setup window counts.
+  const el = (
     <Box key="bar" flexDirection="column">
       <Box key="bar-stats" flexDirection="column">
         {rows.map((row, n) => (
@@ -208,6 +209,7 @@ const barRow = async (
       )}
     </Box>
   )
+  return { el, rows: rows.length + (isActing ? 1 : 0) }
 }
 
 // ── Handoff ─────────────────────────────────────────────────────────────
@@ -312,6 +314,34 @@ const SETUP_PANE = 'pulse-setup'
 // The bar step's two columns: the left one's width, and the body width they need.
 const BAR_LEFT_WIDTH = 32
 const BAR_COLUMNS_MIN = 60
+// The fewest rows the scrolled window between title and footer is worth.
+const WINDOW_MIN = 3
+
+// A piece of a step's middle: what it draws, the rows it takes, and the row
+// each of its controls sits on, by key, counted from its top.
+type Part = { el: RenderChildren; rows: number; at: Record<string, number> }
+
+// The window over the step's middle as last drawn; null while it all fits
+// (or the pane is too short for one, and scrolls whole instead).
+let setupWindow: { at: Record<string, number>; rows: number; window: number; first: string } | null = null
+const setupOffset = atom({ plugin: 'pulse', key: 'setupOffset' } as const, 0)
+
+// Moves the window just enough to show the control `key` holds the focus
+// on; for the top control, to the top, where the question is; for Back,
+// Next or Finish below it, to its end, where the preview is.
+const followFocus = async ($: EngineInterface, key: string) => {
+  const w = setupWindow
+  if (!w) return
+  const last = w.rows - w.window
+  const row = w.at[key]
+  await update($, setupOffset, off =>
+    row === undefined
+      ? last
+      : key === w.first
+        ? 0
+        : Math.max(0, Math.min(last, row, Math.max(off, row - w.window + 1))),
+  )
+}
 
 const draft = atom({ plugin: 'pulse', key: 'draft' } as const, null)
 const setupFocus = atom({ plugin: 'pulse', key: 'setupFocus' } as const, null)
@@ -446,7 +476,10 @@ export const register: Register = on => {
   on('ui.focus', { requestId: SETUP_PANE }, async ($, e, next) => {
     if (e.origin.kind === 'person' && e.element === undefined) return {}
     const done = await next(e)
-    if (!done.deny && e.element !== undefined) await update($, setupFocus, () => e.element ?? null)
+    if (!done.deny && e.element !== undefined) {
+      await update($, setupFocus, () => e.element ?? null)
+      await followFocus($, e.element)
+    }
     return done
   })
 
@@ -455,6 +488,13 @@ export const register: Register = on => {
   // the focused one in view. Past the first or last control the arrow
   // scrolls, so the title and the key hints can still be reached.
   on('ui.scroll', { requestId: SETUP_PANE }, async ($, e, next) => {
+    // The wheel and page keys move Pulse's own window, when there is one.
+    const w = setupWindow
+    if (w && e.origin.kind === 'person' && (e.pointer !== undefined || Math.abs(e.by) !== 1)) {
+      const last = w.rows - w.window
+      await update($, setupOffset, off => Math.max(0, Math.min(last, off + e.by)))
+      return {}
+    }
     const d = await read($, draft)
     if (e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1 || !d) return next(e)
     const order = focusOrder(d)
@@ -477,6 +517,7 @@ export const register: Register = on => {
     if (e.id === SETUP_PANE) {
       await update($, draft, () => null)
       await update($, setupFocus, () => null)
+      await update($, setupOffset, () => 0)
     }
     return done
   })
@@ -505,6 +546,7 @@ export const register: Register = on => {
     const go = async (to: number) => {
       const moved = { ...((await read($, draft)) ?? d), step: to }
       await update($, draft, () => moved)
+      await update($, setupOffset, () => 0)
       await focusOn(startKey(moved))
       void $.ui.scroll({ in: SETUP_PANE, to: 'start' }).catch(() => {})
     }
@@ -567,19 +609,30 @@ export const register: Register = on => {
       )
     }
 
+    const width = Math.max(20, e.props.bodyColumns)
+    // The rows a string takes at `cols` wide, as the terminal wraps it.
+    const tall = (s: string, cols = width) => Math.max(1, Math.ceil(s.length / Math.max(1, cols)))
+
     // No digit keys: a digit is the engine's (band surveys) and leaves the pane.
-    const toggle = (key: string, label: string, isOn: boolean, flip: (old: Config) => Config) => (
-      <Box key={key}>
-        <Button
-          key={key}
-          plain
-          dimColor={!isOn}
-          autoFocus={key === first ? true : undefined}
-          label={`${isOn ? '[x]' : '[ ]'} ${label}`}
-          onPress={() => edit(flip)}
-        />
-      </Box>
-    )
+    const toggle = (key: string, label: string, isOn: boolean, flip: (old: Config) => Config, cols = width): Part => {
+      const text = `${isOn ? '[x]' : '[ ]'} ${label}`
+      return {
+        el: (
+          <Box key={key}>
+            <Button
+              key={key}
+              plain
+              dimColor={!isOn}
+              autoFocus={key === first ? true : undefined}
+              label={text}
+              onPress={() => edit(flip)}
+            />
+          </Box>
+        ),
+        rows: tall(text, cols),
+        at: { [key]: 0 },
+      }
+    }
 
     // A one-of-several pick: one option per line rather than a dropdown, so
     // Up and Down reach each and Enter picks. Left and Right are the engine's
@@ -590,46 +643,83 @@ export const register: Register = on => {
       value: string,
       options: { value: string; label: string }[],
       pick: (v: string) => void,
-    ) => (
-      <Box key={key} flexDirection="column">
-        <Text>{label}</Text>
-        {options.map(o => (
-          <Box key={`${key}-${o.value}-row`} marginLeft={2}>
-            <Button
-              key={`${key}-${o.value}`}
-              plain
-              dimColor={o.value !== value}
-              autoFocus={`${key}-${o.value}` === first ? true : undefined}
-              label={`${o.value === value ? '(•)' : '( )'} ${o.label}`}
-              onPress={() => pick(o.value)}
-            />
+      cols = width,
+    ): Part => {
+      const text = (o: { value: string; label: string }) => `${o.value === value ? '(•)' : '( )'} ${o.label}`
+      const at: Record<string, number> = {}
+      let rows = 1
+      for (const o of options) {
+        at[`${key}-${o.value}`] = rows
+        rows += tall(text(o), cols - 2)
+      }
+      return {
+        el: (
+          <Box key={key} flexDirection="column">
+            <Text>{label}</Text>
+            {options.map(o => (
+              <Box key={`${key}-${o.value}-row`} marginLeft={2}>
+                <Button
+                  key={`${key}-${o.value}`}
+                  plain
+                  dimColor={o.value !== value}
+                  autoFocus={`${key}-${o.value}` === first ? true : undefined}
+                  label={text(o)}
+                  onPress={() => pick(o.value)}
+                />
+              </Box>
+            ))}
           </Box>
-        ))}
-      </Box>
-      )
+        ),
+        rows,
+        at,
+      }
+    }
 
-    const preview = c.features.bar ? (
-      <Box key="preview" flexDirection="column" marginTop={1}>
-        <Text color={GREY} dimColor>Preview:</Text>
-        {await barRow($, e, c, { isWorking: false, isPreview: true, columns: e.props.bodyColumns })}
-      </Box>
-    ) : null
+    const line = (key: string, s: string, color?: string): Part => ({
+      el: (
+        <Text key={key} color={color} dimColor={color === GREY ? true : undefined}>
+          {s}
+        </Text>
+      ),
+      rows: tall(s),
+      at: {},
+    })
+    // Parts one under another, their controls' rows counted from the top.
+    const stack = (key: string, list: (Part | null | false)[], marginTop = 0): Part => {
+      const shown = list.filter((p): p is Part => !!p)
+      const at: Record<string, number> = {}
+      let rows = marginTop
+      for (const p of shown) {
+        for (const [k, r] of Object.entries(p.at)) at[k] = rows + r
+        rows += p.rows
+      }
+      return {
+        el: (
+          <Box key={key} flexDirection="column" marginTop={marginTop}>
+            {shown.map(p => p.el)}
+          </Box>
+        ),
+        rows,
+        at,
+      }
+    }
 
-    let body
+    const bar = c.features.bar ? await barRow($, e, c, { isWorking: false, isPreview: true, columns: width }) : null
+    const preview = bar && stack('preview', [line('preview-label', 'Preview:', GREY), { el: bar.el, rows: bar.rows, at: {} }], 1)
+
+    let middle: Part
     if (step === 'features') {
-      body = (
-        <Box flexDirection="column">
-          <Text>Which parts of Pulse do you want?</Text>
-          {toggle('f-bar', 'Usage bar — context, cache, limits and cost above the prompt', c.features.bar, o => ({
-            ...o,
-            features: { ...o.features, bar: !o.features.bar },
-          }))}
-          {toggle('f-handoff', 'Handoff — write a note and start fresh when the context fills up', c.features.handoff, o => ({
-            ...o,
-            features: { ...o.features, handoff: !o.features.handoff },
-          }))}
-        </Box>
-      )
+      middle = stack('body', [
+        line('ask', 'Which parts of Pulse do you want?'),
+        toggle('f-bar', 'Usage bar — context, cache, limits and cost above the prompt', c.features.bar, o => ({
+          ...o,
+          features: { ...o.features, bar: !o.features.bar },
+        })),
+        toggle('f-handoff', 'Handoff — write a note and start fresh when the context fills up', c.features.handoff, o => ({
+          ...o,
+          features: { ...o.features, handoff: !o.features.handoff },
+        })),
+      ])
     } else if (step === 'bar') {
       const flipBar = (k: 'tokens' | 'cache' | 'limits' | 'resets' | 'cost') => (o: Config) => ({
         ...o,
@@ -639,6 +729,11 @@ export const register: Register = on => {
         ...o,
         bar: { ...o.bar, buttons: { ...o.bar.buttons, [k]: !o.bar.buttons[k] } },
       })
+      // Two columns where they fit, so the step needs fewer rows. Up and Down
+      // still walk every item: the left column, then the right (focusOrder).
+      const isTwo = width >= BAR_COLUMNS_MIN
+      const leftCols = isTwo ? BAR_LEFT_WIDTH : width
+      const rightCols = isTwo ? width - BAR_LEFT_WIDTH : width
       const left = [
         choose(
           'meter',
@@ -649,79 +744,80 @@ export const register: Register = on => {
             { value: 'number', label: 'Number only' },
           ],
           v => edit(o => ({ ...o, bar: { ...o.bar, meter: v === 'number' ? 'number' : 'bar' } })),
+          leftCols,
         ),
-        toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens')),
-        toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache')),
+        toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens'), leftCols),
+        toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache'), leftCols),
       ]
       const right = [
-        toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits')),
-        toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets')),
-        toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost')),
-        toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize')),
-        c.features.handoff ? toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff')) : null,
+        toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits'), rightCols),
+        toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets'), rightCols),
+        toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost'), rightCols),
+        toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize'), rightCols),
+        c.features.handoff &&
+          toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff'), rightCols),
       ]
-      // Two columns where they fit, so the step needs fewer rows. Up and Down
-      // still walk every item: the left column, then the right (focusOrder).
-      body = (
-        <Box flexDirection="column">
-          <Text>What should the bar show?</Text>
-          {e.props.bodyColumns >= BAR_COLUMNS_MIN ? (
+      let items: Part
+      if (isTwo) {
+        const l = stack('bar-left', left)
+        const r = stack('bar-right', right)
+        items = {
+          el: (
             <Box key="bar-columns">
-              <Box key="bar-left" flexDirection="column" width={BAR_LEFT_WIDTH}>
-                {left}
+              <Box key="bar-left-slot" width={BAR_LEFT_WIDTH}>
+                {l.el}
               </Box>
-              <Box key="bar-right" flexDirection="column">
-                {right}
-              </Box>
+              {r.el}
             </Box>
-          ) : (
-            <Box key="bar-column" flexDirection="column">
-              {left}
-              {right}
-            </Box>
-          )}
-          {preview}
-        </Box>
-      )
+          ),
+          rows: Math.max(l.rows, r.rows),
+          at: { ...l.at, ...r.at },
+        }
+      } else {
+        items = stack('bar-column', [...left, ...right])
+      }
+      middle = stack('body', [line('ask', 'What should the bar show?'), items, preview])
     } else if (step === 'alarm') {
-      body = (
-        <Box flexDirection="column">
-          <Text>When should Pulse warn you that the context is filling up?</Text>
-          {choose(
-            'alarm',
-            'Warn from: ',
-            String(c.alarm),
-            ALARMS.map(a => ({ value: String(a), label: `${a}%` })),
-            v => edit(o => ({ ...o, alarm: (ALARMS.find(a => String(a) === v) ?? 75) as Alarm })),
-          )}
-          <Text color={GREY} dimColor>{`Yellow from ${c.alarm}%, red from ${redLevel(c.alarm)}%.`}</Text>
-          {preview}
-        </Box>
-      )
+      middle = stack('body', [
+        line('ask', 'When should Pulse warn you that the context is filling up?'),
+        choose(
+          'alarm',
+          'Warn from: ',
+          String(c.alarm),
+          ALARMS.map(a => ({ value: String(a), label: `${a}%` })),
+          v => edit(o => ({ ...o, alarm: (ALARMS.find(a => String(a) === v) ?? 75) as Alarm })),
+        ),
+        line('levels', `Yellow from ${c.alarm}%, red from ${redLevel(c.alarm)}%.`, GREY),
+        preview,
+      ])
     } else {
-      body = (
-        <Box flexDirection="column">
-          {c.features.handoff && (
-            <Box flexDirection="column">
-              <Text>Where should handoff notes go?</Text>
-              {choose(
-                'handoff-dir',
-                'Folder: ',
-                c.handoffDir,
-                [
-                  { value: 'home', label: '~/.claude/handoffs (outside your projects)' },
-                  { value: 'project', label: '.claude/handoffs in the project' },
-                ],
-                v => edit(o => ({ ...o, handoffDir: v === 'project' ? 'project' : 'home' })),
-              )}
-              {c.handoffDir === 'project' && (
-                <Text color="warning">Add .claude/handoffs/ to .gitignore so notes are not committed.</Text>
-              )}
-            </Box>
-          )}
-        </Box>
-      )
+      middle = stack('body', [
+        c.features.handoff && line('ask', 'Where should handoff notes go?'),
+        c.features.handoff &&
+          choose(
+            'handoff-dir',
+            'Folder: ',
+            c.handoffDir,
+            [
+              { value: 'home', label: '~/.claude/handoffs (outside your projects)' },
+              { value: 'project', label: '.claude/handoffs in the project' },
+            ],
+            v => edit(o => ({ ...o, handoffDir: v === 'project' ? 'project' : 'home' })),
+          ),
+        c.features.handoff &&
+          c.handoffDir === 'project' &&
+          line('gitignore', 'Add .claude/handoffs/ to .gitignore so notes are not committed.', 'warning'),
+      ])
     }
+
+    // The title stays on the top row and Back, Next and the hints on the
+    // bottom two. Between them, when the step is taller than the pane gives,
+    // a window Pulse scrolls itself: it follows the focus, and the wheel and
+    // page keys move it. A pane too short even for that scrolls whole.
+    const room = e.props.scroll.bodyRows - 3
+    const isClipped = middle.rows + 2 > room && room >= WINDOW_MIN
+    setupWindow = isClipped ? { at: middle.at, rows: middle.rows, window: room, first } : null
+    const offset = isClipped ? Math.min(Math.max(0, await read($, setupOffset)), middle.rows - room) : 0
 
     const isLast = i === list.length - 1
     const keys = [
@@ -732,15 +828,26 @@ export const register: Register = on => {
       'Esc closes',
     ]
     return (
-      <Box flexDirection="column" width={Math.max(20, e.props.bodyColumns)}>
-        <Box>
+      <Box flexDirection="column" width={width}>
+        <Box key="title">
           <Text color="claude">Pulse setup</Text>
           <Text color={GREY} dimColor>{` · step ${i + 1}/${list.length}`}</Text>
         </Box>
-        <Box marginTop={1}>{body}</Box>
-        {/* Stacked, Back above Next/Finish: Down reaches both, as Left would leave the pane. */}
-        <Box key="nav" flexDirection="column" alignItems="flex-start" marginTop={1}>
+        {isClipped ? (
+          <Box key="window" flexDirection="column" height={room} overflow="hidden" flexShrink={0}>
+            <Box key="window-rows" flexDirection="column" flexShrink={0} marginTop={-offset}>
+              {middle.el}
+            </Box>
+          </Box>
+        ) : (
+          <Box key="window" marginY={1}>
+            {middle.el}
+          </Box>
+        )}
+        {/* One row, Back then Next/Finish: Down reaches both in that order. */}
+        <Box key="nav">
           {i > 0 && <Button key="back" label="Back" hotkey="b" variant="secondary" onPress={() => go(i - 1)} />}
+          {i > 0 && <Text> </Text>}
           {isLast ? (
             <Button
               key="finish"
@@ -761,7 +868,9 @@ export const register: Register = on => {
             />
           )}
         </Box>
-        <Text color={GREY} dimColor>{keys.filter(Boolean).join(' · ')}</Text>
+        <Text color={GREY} dimColor wrap="truncate-end">
+          {keys.filter(Boolean).join(' · ')}
+        </Text>
       </Box>
     )
   })
@@ -776,7 +885,9 @@ export const register: Register = on => {
     const rows = [
       await setupRow($, e, cfg),
       await handoffRow($, e, cfg),
-      cfg.features.bar ? await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns }) : null,
+      cfg.features.bar
+        ? (await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns })).el
+        : null,
     ].filter(row => row !== null)
     if (rows.length === 0) return below
 

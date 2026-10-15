@@ -206,10 +206,8 @@ describe('setup wizard', () => {
     expect((await pane.find({ type: 'Button', key: 'meter-number' }))?.props?.label).toMatch(/^\( \) Number only/)
     await next(pane)
     expect(await pane.find({ type: 'Select' })).toBeUndefined()
-    // Back above Next, stacked: Down reaches both without Left or Right.
-    const nav = await pane.find({ key: 'nav' })
-    expect(nav?.props?.flexDirection).toBe('column')
-    expect(nav?.text).toMatch(/Back.*Next/)
+    // Back then Next, in that order: Down reaches both without Left or Right.
+    expect((await pane.find({ key: 'nav' }))?.text).toMatch(/Back.*Next/)
     await pane.press({ key: 'alarm-90' })
     expect((await pane.find({ type: 'Button', key: 'alarm-90' }))?.props?.label).toMatch(/^\(•\) 90%/)
     expect(await pane.find({ text: /Yellow from 90%, red from 95%\./ })).toBeDefined()
@@ -237,6 +235,58 @@ describe('setup wizard', () => {
     }
     await pane.press({ key: 'finish' })
     expect(await drawn()).toEqual(focusOrder({ config: defaults(), step: 3, result: { ok: true } }))
+    await pane.unmount()
+  })
+
+  test('in a short pane the title, Back, Next and hints stay; the middle scrolls under the focus', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const props = { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 11 } }
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE, props } as never)) as Wizard
+    await next(pane)
+    const person = { kind: 'person' } as const
+    const at = (element: string) =>
+      $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element, origin: person } as never)
+    const shift = async () => (await pane.find({ key: 'window-rows' }))?.props?.marginTop
+    // 11 rows: title, an 8-row window, Back and Next, hints.
+    expect((await pane.find({ key: 'window' }))?.props?.height).toBe(8)
+    expect((await pane.find({ key: 'nav' }))?.text).toMatch(/Back.*Next/)
+    expect(await pane.find({ text: /step 2\/4/ })).toBeDefined()
+    expect(await shift()).toBe(-0)
+
+    // The question, 5 rows of items, a blank, then the preview: its label,
+    // the bar wrapped to 2 rows at 80 columns, the buttons. 11 rows.
+    // An item already showing leaves the window where it is.
+    await at('b-handoff')
+    expect(await shift()).toBe(-0)
+    // Back and Next take it to the end, where the preview is.
+    await at('next-bar')
+    expect(await shift()).toBe(-3)
+    // Going up, it stays while the item shows (row 3 is its top row)...
+    await at('meter-number')
+    expect(await shift()).toBe(-3)
+    // ...and the top item brings the question back too.
+    await at('meter-bar')
+    expect(await shift()).toBe(-0)
+    await at('next-bar')
+
+    // The wheel moves the window, within its ends; the frame never moves.
+    const wheel = (by: number) =>
+      $.ui.scroll({
+        component: 'Pane',
+        requestId: 'pulse-setup',
+        offset: 0,
+        by,
+        bodyRows: 11,
+        contentRows: 11,
+        origin: person,
+        pointer: { column: 3, row: 2 },
+      } as never)
+    await wheel(5)
+    expect(await shift()).toBe(-3)
+    await wheel(-1)
+    expect(await shift()).toBe(-2)
+    expect(f.scrolls).toEqual([])
     await pane.unmount()
   })
 

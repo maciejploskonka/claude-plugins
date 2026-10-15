@@ -56,6 +56,8 @@ declare module 'claude-code' {
       draft: Draft | null
       /** The key of the wizard control holding the focus ring, as last moved. */
       setupFocus: string | null
+      /** The first row of the step's middle the setup window shows. */
+      setupOffset: number
     }
   }
 }
