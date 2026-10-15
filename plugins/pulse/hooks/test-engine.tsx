@@ -47,6 +47,12 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
     openArgs: [] as { id: string; closeOnEscape?: true; focus?: true }[],
     closed: [] as string[],
     compacts: 0,
+    /** Each compact's instructions, `undefined` for none. */
+    compactInstructions: [] as (string | undefined)[],
+    /** Set, a compact fails, as it does while Claude is working. */
+    isBusy: false,
+    /** The prompt box's text: what the person has typed and not sent. */
+    draft: '',
     /** Set, saving the config fails with this message. */
     storeError: null as string | null,
     focusMoves: [] as (string | null)[],
@@ -99,9 +105,16 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
       cost: { usd: 1.234 },
     },
   }))
-  on('session.compact', () => {
+  on('session.compact', (_$, e) => {
+    if (f.isBusy) throw new Error('a turn is running')
     f.compacts += 1
+    f.compactInstructions.push(e.instructions)
     return { messages: [{ role: 'user', text: 'summary', toolUses: [] }] } as never
+  })
+  on('prompt.read', () => ({ value: { text: f.draft, cursor: f.draft.length } }))
+  on('prompt.fill', (_$, e) => {
+    f.draft = e.mode === 'replace' ? e.text : f.draft + e.text
+    return { isFilled: true, text: f.draft }
   })
   on('fs.exists', (_$, e) => ({ value: f.files.has(e.path) }))
   on('command.register', (_$, e) => {
@@ -140,8 +153,8 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
 export const turnEnds = ($: Engine) =>
   $.turn.complete({ turnId: 't', answer: 'ok', reason: 'answer' } as never)
 
-export const runCommand = ($: Engine, command: string) =>
-  $.command.run({ command, args: '', origin: { kind: 'composer' } } as never)
+export const runCommand = ($: Engine, command: string, args = '') =>
+  $.command.run({ command, args, origin: { kind: 'composer' } } as never)
 
 // One main-loop model request, drained.
 export const mainStep = async ($: Engine) => {

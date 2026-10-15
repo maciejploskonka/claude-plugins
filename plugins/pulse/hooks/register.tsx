@@ -71,6 +71,7 @@ const offerHandoffCommand = async ($: EngineInterface, cfg: Config) => {
   await $.command.register({
     name: 'pulse-handoff',
     description: 'Write a handoff note, then clear and continue from it',
+    argumentHint: '[focus]',
   })
 }
 
@@ -99,12 +100,28 @@ const refreshUsage = async ($: EngineInterface) => {
   }
 }
 
+// ── Focus from the prompt box ───────────────────────────────────────────
+// Text typed in the prompt box and not sent steers the Summarize or Handoff
+// press that comes next; once used, the box is emptied, so it is not sent
+// as a message of its own too. Nothing typed: the buttons work as before.
+
+const FOCUS_TOAST = 'Used your typed text as the focus.'
+
+const typedFocus = async ($: EngineInterface) => (await $.prompt.read()).text.trim()
+
+const focusUsed = async ($: EngineInterface) => {
+  await $.prompt.fill({ text: '' }).catch(() => {})
+  $.ui.toast(FOCUS_TOAST)
+}
+
 const summarize = async ($: EngineInterface) => {
   if (await read($, isCompacting)) return
   await update($, isCompacting, () => true)
   try {
-    const { skip } = await $.session.compact({})
+    const focus = await typedFocus($)
+    const { skip } = await $.session.compact(focus === '' ? {} : { instructions: focus })
     if (skip) $.ui.toast('Summarize was skipped by another plugin.')
+    else if (focus !== '') await focusUsed($)
   } catch {
     $.ui.toast('Cannot summarize while Claude is working.')
   } finally {
@@ -189,7 +206,7 @@ const barRow = async (
   // stats. A button added later goes in this list and lands there too.
   const actions: { key: string; label: string; isPrimary: boolean; onPress: () => unknown }[] = []
   if (showSummarize) actions.push({ key: 'summarize', label: 'Summarize', isPrimary: false, onPress: () => summarize($) })
-  if (showHandoff) actions.push({ key: 'handoff', label: 'Handoff', isPrimary: isAlarm, onPress: () => startHandoff($, cfg) })
+  if (showHandoff) actions.push({ key: 'handoff', label: 'Handoff', isPrimary: isAlarm, onPress: () => handoffPressed($, cfg) })
   const isActing = actions.length > 0 && (opts.isPreview || busy || !opts.isWorking)
 
   const statColumns = Math.max(10, opts.columns)
@@ -242,7 +259,8 @@ const handoffPhase = atom({ plugin: 'pulse', key: 'handoffPhase' } as const, 'id
 const handoffPath = atom({ plugin: 'pulse', key: 'handoffPath' } as const, null)
 const handoffReminded = atom({ plugin: 'pulse', key: 'handoffReminded' } as const, false)
 
-const startHandoff = async ($: EngineInterface, cfg: Config) => {
+// `focus`: what the note is to be about, '' for the whole session.
+const startHandoff = async ($: EngineInterface, cfg: Config, focus = '') => {
   const root = (await $.session.root()).replace(/\/+$/, '')
   const base = cfg.handoffDir === 'project' ? root : ((await $.env.get('HOME')) ?? '/tmp')
   const file = notePathFor(base, root, await $.clock.now())
@@ -250,7 +268,14 @@ const startHandoff = async ($: EngineInterface, cfg: Config) => {
   await update($, handoffPhase, () => 'writing' as const)
   // On a timer, outside the calling hook: a slash command's own hook
   // cannot start a turn.
-  $.clock.after(0, () => void $.prompt.submit({ text: WRITE_PROMPT(file) }))
+  $.clock.after(0, () => void $.prompt.submit({ text: WRITE_PROMPT(file, focus) }))
+}
+
+// The bar's button: its focus is what is typed in the prompt box.
+const handoffPressed = async ($: EngineInterface, cfg: Config) => {
+  const focus = await typedFocus($)
+  await startHandoff($, cfg, focus)
+  if (focus !== '') await focusUsed($)
 }
 
 const clearAndContinue = async ($: EngineInterface) => {
@@ -480,10 +505,12 @@ export const register: Register = on => {
     return done
   })
 
-  on('command.run', { command: 'pulse-handoff' }, async $ => {
+  // Its focus is the text after the command: the prompt box still holds the
+  // command line itself while this runs.
+  on('command.run', { command: 'pulse-handoff' }, async ($, e) => {
     const cfg = await read($, config)
     if (!cfg.features.handoff) return { text: HINT('Handoff') }
-    await startHandoff($, cfg)
+    await startHandoff($, cfg, e.args.trim())
     return { text: 'Asking Claude to write the handoff note.' }
   })
 

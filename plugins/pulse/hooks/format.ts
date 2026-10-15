@@ -75,13 +75,18 @@ export const withSamples = (u: UsageSnapshot | null, now: number): UsageSnapshot
 
 // ── Handoff ─────────────────────────────────────────────────────────────
 
-export const WRITE_PROMPT = (file: string) =>
+// `focus`, when given, is what the person typed: the part of the work the
+// note is about.
+export const WRITE_PROMPT = (file: string, focus = '') =>
   [
     `Write a handoff note to \`${file}\` so a fresh session can pick up this work without this conversation.`,
     'Include: the goal, what is done, the current state (files touched, branches, commands that matter),',
     'open problems, the exact next steps, and anything learned the hard way.',
+    focus === '' ? null : `Focus the note on: ${focus.replace(/\.$/, '')}. Leave out work unrelated to that.`,
     'Short and concrete. Only write the file; do not continue the work.',
-  ].join(' ')
+  ]
+    .filter(line => line !== null)
+    .join(' ')
 
 export const RESUME_PROMPT = (file: string) =>
   `Read \`${file}\`, the handoff note from my previous session, and continue from it. Start by saying in two lines where we are.`
