@@ -140,5 +140,6 @@ restart Claude Code if the new version does not show.
   In a short pane the title, Back/Next and the key hints stay put and only the middle scrolls.
   The bar preview shows only in the tall setup pane docked beside the transcript, not in the short one above the prompt.
   `/pulse-handoff` is listed only when there is no `Handoff` button to press.
+  The setup's last screen no longer lists what is turned on.
 - **0.1.1**: Rate limits show placeholders until the first answer.
 - **0.1.0**: First release.
