@@ -77,3 +77,7 @@ export const focusOrder = (d: Draft): string[] => {
             : []
   return [...body, ...(i > 0 ? ['back'] : []), nextKeyOf(list, i)]
 }
+
+// Where a screen starts the focus: its top control, so the step number above
+// it shows. Never Back (Enter would undo the step), so Next on a bare step.
+export const startKey = (d: Draft) => focusOrder(d).find(k => k !== 'back') ?? 'finish'

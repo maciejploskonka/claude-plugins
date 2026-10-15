@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Alarm, CacheTotals, Config, Draft, SetupResult, UsageSnapshot } from '../types'
 import { GREY, TRACK, cacheColor, ctxColor, limitColor, redLevel } from './colors'
-import { ALARMS, HINT, STORE_KEY, defaults, focusOrder, fromRaw, isObj, nextKeyOf, steps } from './config'
+import { ALARMS, HINT, STORE_KEY, defaults, focusOrder, fromRaw, isObj, nextKeyOf, startKey, steps } from './config'
 import {
   LIMIT_NAMES,
   RESUME_PROMPT,
@@ -309,6 +309,9 @@ const handoffOnClear = async ($: EngineInterface) => {
 // ── Setup wizard ────────────────────────────────────────────────────────
 
 const SETUP_PANE = 'pulse-setup'
+// The bar step's two columns: the left one's width, and the body width they need.
+const BAR_LEFT_WIDTH = 32
+const BAR_COLUMNS_MIN = 60
 
 const draft = atom({ plugin: 'pulse', key: 'draft' } as const, null)
 const setupFocus = atom({ plugin: 'pulse', key: 'setupFocus' } as const, null)
@@ -456,8 +459,8 @@ export const register: Register = on => {
     if (e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1 || !d) return next(e)
     const order = focusOrder(d)
     const at = order.indexOf((await read($, setupFocus)) ?? '')
-    // Not known yet: the ring is where every screen starts it, on its last button.
-    const key = order[(at === -1 ? order.length - 1 : at) + e.by]
+    // Not known yet: the ring is where every screen starts it.
+    const key = order[(at === -1 ? order.indexOf(startKey(d)) : at) + e.by]
     if (key === undefined) return next(e)
     await $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
     return {}
@@ -492,16 +495,20 @@ export const register: Register = on => {
         const base = old ?? d
         return { ...base, config: fn(base.config) }
       })
-    // Every step starts on Next (Finish on the last): Enter moves on, Up fixes.
     // Noted here too: the ring's own `ui.focus` can come before the redraw it waits for.
     const focusOn = async (key: string) => {
       await update($, setupFocus, () => key)
       void $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
     }
+    // Every step starts at its top: the step number shows, the focus on the
+    // first control. n moves on from anywhere.
     const go = async (to: number) => {
-      await update($, draft, old => ({ ...(old ?? d), step: to }))
-      await focusOn(nextKeyOf(list, to))
+      const moved = { ...((await read($, draft)) ?? d), step: to }
+      await update($, draft, () => moved)
+      await focusOn(startKey(moved))
+      void $.ui.scroll({ in: SETUP_PANE, to: 'start' }).catch(() => {})
     }
+    const first = startKey(d)
     // Saves, then shows how it went in place of the steps; Close ends it.
     const finish = async () => {
       const latest = (await read($, draft))?.config ?? c
@@ -563,7 +570,14 @@ export const register: Register = on => {
     // No digit keys: a digit is the engine's (band surveys) and leaves the pane.
     const toggle = (key: string, label: string, isOn: boolean, flip: (old: Config) => Config) => (
       <Box key={key}>
-        <Button key={key} plain dimColor={!isOn} label={`${isOn ? '[x]' : '[ ]'} ${label}`} onPress={() => edit(flip)} />
+        <Button
+          key={key}
+          plain
+          dimColor={!isOn}
+          autoFocus={key === first ? true : undefined}
+          label={`${isOn ? '[x]' : '[ ]'} ${label}`}
+          onPress={() => edit(flip)}
+        />
       </Box>
     )
 
@@ -585,6 +599,7 @@ export const register: Register = on => {
               key={`${key}-${o.value}`}
               plain
               dimColor={o.value !== value}
+              autoFocus={`${key}-${o.value}` === first ? true : undefined}
               label={`${o.value === value ? '(•)' : '( )'} ${o.label}`}
               onPress={() => pick(o.value)}
             />
@@ -624,26 +639,47 @@ export const register: Register = on => {
         ...o,
         bar: { ...o.bar, buttons: { ...o.bar.buttons, [k]: !o.bar.buttons[k] } },
       })
+      const left = [
+        choose(
+          'meter',
+          'Context meter: ',
+          c.bar.meter,
+          [
+            { value: 'bar', label: 'Bar ██░░' },
+            { value: 'number', label: 'Number only' },
+          ],
+          v => edit(o => ({ ...o, bar: { ...o.bar, meter: v === 'number' ? 'number' : 'bar' } })),
+        ),
+        toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens')),
+        toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache')),
+      ]
+      const right = [
+        toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits')),
+        toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets')),
+        toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost')),
+        toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize')),
+        c.features.handoff ? toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff')) : null,
+      ]
+      // Two columns where they fit, so the step needs fewer rows. Up and Down
+      // still walk every item: the left column, then the right (focusOrder).
       body = (
         <Box flexDirection="column">
           <Text>What should the bar show?</Text>
-          {choose(
-            'meter',
-            'Context meter: ',
-            c.bar.meter,
-            [
-              { value: 'bar', label: 'Bar ██░░' },
-              { value: 'number', label: 'Number only' },
-            ],
-            v => edit(o => ({ ...o, bar: { ...o.bar, meter: v === 'number' ? 'number' : 'bar' } })),
+          {e.props.bodyColumns >= BAR_COLUMNS_MIN ? (
+            <Box key="bar-columns">
+              <Box key="bar-left" flexDirection="column" width={BAR_LEFT_WIDTH}>
+                {left}
+              </Box>
+              <Box key="bar-right" flexDirection="column">
+                {right}
+              </Box>
+            </Box>
+          ) : (
+            <Box key="bar-column" flexDirection="column">
+              {left}
+              {right}
+            </Box>
           )}
-          {toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens'))}
-          {toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache'))}
-          {toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits'))}
-          {toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets'))}
-          {toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost'))}
-          {toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize'))}
-          {c.features.handoff && toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff'))}
           {preview}
         </Box>
       )
@@ -706,9 +742,23 @@ export const register: Register = on => {
         <Box key="nav" flexDirection="column" alignItems="flex-start" marginTop={1}>
           {i > 0 && <Button key="back" label="Back" hotkey="b" variant="secondary" onPress={() => go(i - 1)} />}
           {isLast ? (
-            <Button key="finish" label="Finish" hotkey="f" variant="primary" autoFocus onPress={() => finish()} />
+            <Button
+              key="finish"
+              label="Finish"
+              hotkey="f"
+              variant="primary"
+              autoFocus={first === 'finish' ? true : undefined}
+              onPress={() => finish()}
+            />
           ) : (
-            <Button key={nextKeyOf(list, i)}label="Next" hotkey="n" variant="primary" autoFocus onPress={() => go(i + 1)} />
+            <Button
+              key={nextKeyOf(list, i)}
+              label="Next"
+              hotkey="n"
+              variant="primary"
+              autoFocus={first === nextKeyOf(list, i) ? true : undefined}
+              onPress={() => go(i + 1)}
+            />
           )}
         </Box>
         <Text color={GREY} dimColor>{keys.filter(Boolean).join(' · ')}</Text>
