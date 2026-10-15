@@ -3,7 +3,7 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Alarm, CacheTotals, Config, Draft, SetupResult, UsageSnapshot } from '../types'
 import { GREY, TRACK, cacheColor, ctxColor, limitColor, redLevel } from './colors'
-import { ALARMS, HINT, STORE_KEY, defaults, fromRaw, isObj, steps } from './config'
+import { ALARMS, HINT, STORE_KEY, defaults, focusOrder, fromRaw, isObj, nextKeyOf, steps } from './config'
 import {
   LIMIT_NAMES,
   RESUME_PROMPT,
@@ -311,6 +311,7 @@ const handoffOnClear = async ($: EngineInterface) => {
 const SETUP_PANE = 'pulse-setup'
 
 const draft = atom({ plugin: 'pulse', key: 'draft' } as const, null)
+const setupFocus = atom({ plugin: 'pulse', key: 'setupFocus' } as const, null)
 
 // Starts a draft from the saved config and opens the pane.
 const openSetup = async ($: EngineInterface) => {
@@ -438,9 +439,28 @@ export const register: Register = on => {
   // An arrow past the wizard's edge would carry the focus out of it (to the
   // pane's close mark, another tab or the session list). Keep it on the
   // wizard's own controls; Esc still hands the keyboard back.
-  on('ui.focus', { requestId: SETUP_PANE }, ($, e, next) =>
-    e.origin.kind === 'person' && e.element === undefined ? {} : next(e),
-  )
+  // It also remembers where the ring lands, for the arrows below.
+  on('ui.focus', { requestId: SETUP_PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person' && e.element === undefined) return {}
+    const done = await next(e)
+    if (!done.deny && e.element !== undefined) await update($, setupFocus, () => e.element ?? null)
+    return done
+  })
+
+  // While the wizard is taller than its pane, the engine spends an arrow on
+  // scrolling a row. Spend it on the next control instead: the engine keeps
+  // the focused one in view. Past the first or last control the arrow
+  // scrolls, so the title and the key hints can still be reached.
+  on('ui.scroll', { requestId: SETUP_PANE }, async ($, e, next) => {
+    const d = await read($, draft)
+    if (e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1 || !d) return next(e)
+    const order = focusOrder(d)
+    const at = order.indexOf((await read($, setupFocus)) ?? '')
+    const key = order[at === -1 ? (e.by > 0 ? 0 : order.length - 1) : at + e.by]
+    if (key === undefined) return next(e)
+    await $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
+    return {}
+  })
 
   on('command.run', { command: 'pulse-reset' }, async $ => {
     await useDefaults($)
@@ -469,12 +489,9 @@ export const register: Register = on => {
         return { ...base, config: fn(base.config) }
       })
     // Every step starts on Next (Finish on the last): Enter moves on, Up fixes.
-    // Next's key names its step, so the focus waits for the new step's button
-    // rather than landing on the old one before the redraw.
-    const nextKeyOf = (n: number) => (n >= list.length - 1 ? 'finish' : `next-${list[n]}`)
     const go = async (to: number) => {
       await update($, draft, old => ({ ...(old ?? d), step: to }))
-      void $.ui.focus({ requestId: SETUP_PANE, key: nextKeyOf(to) }).catch(() => {})
+      void $.ui.focus({ requestId: SETUP_PANE, key: nextKeyOf(list, to) }).catch(() => {})
     }
     // Saves, then shows how it went in place of the steps; Close ends it.
     const finish = async () => {
@@ -682,7 +699,7 @@ export const register: Register = on => {
           {isLast ? (
             <Button key="finish" label="Finish" hotkey="f" variant="primary" autoFocus onPress={() => finish()} />
           ) : (
-            <Button key={nextKeyOf(i)} label="Next" hotkey="n" variant="primary" autoFocus onPress={() => go(i + 1)} />
+            <Button key={nextKeyOf(list, i)}label="Next" hotkey="n" variant="primary" autoFocus onPress={() => go(i + 1)} />
           )}
         </Box>
         <Text color={GREY} dimColor>{keys.filter(Boolean).join(' · ')}</Text>

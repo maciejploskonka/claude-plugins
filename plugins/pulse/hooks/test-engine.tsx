@@ -48,6 +48,8 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
     /** Set, saving the config fails with this message. */
     storeError: null as string | null,
     focusMoves: [] as (string | null)[],
+    /** Rows each scroll that reached the engine moved by. */
+    scrolls: [] as number[],
     panes: [] as { id: string; title: string; isShown: boolean; isFocused: boolean; isPlaced: boolean }[],
     clock: mock.clock(on),
   }
@@ -77,6 +79,10 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
   })
   on('ui.focus', (_$, e) => {
     f.focusMoves.push(e.element ?? null)
+    return {}
+  })
+  on('ui.scroll', (_$, e) => {
+    f.scrolls.push(e.by)
     return {}
   })
   on('ui.panes', () => ({ value: f.panes }))

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Mounted } from 'claude-code/testing'
 
-import { defaults } from './config'
+import { defaults, focusOrder } from './config'
 import { BAND, PANE_PROPS, START, SURFACES, engine, runCommand } from './test-engine'
 
 const PANE = { component: 'Pane', requestId: 'pulse-setup', props: PANE_PROPS } as const
@@ -224,6 +224,61 @@ describe('setup wizard', () => {
     expect(f.focusMoves).toEqual([])
     await $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element: 'next', origin: person } as never)
     expect(f.focusMoves).toEqual(['next'])
+  })
+
+  test('the arrows walk the controls in the order they are drawn, on every step', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    const drawn = async () => (await pane.findAll({ type: 'Button' })).map(b => b.key)
+    for (let step = 0; step < 4; step += 1) {
+      expect(await drawn()).toEqual(focusOrder({ config: defaults(), step }))
+      if (step < 3) await next(pane)
+    }
+    await pane.press({ key: 'finish' })
+    expect(await drawn()).toEqual(focusOrder({ config: defaults(), step: 3, result: { ok: true } }))
+    await pane.unmount()
+  })
+
+  // The arrow's focus move is $.ui.focus, which the test kit cannot resolve:
+  // checked by hand. Here: which arrows still scroll the window.
+  test('in a pane too short for the wizard, arrows skip the scroll until past the ends', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await next(pane)
+    const person = { kind: 'person' } as const
+    const at = (element: string) =>
+      $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element, origin: person } as never)
+    const scroll = (by: number, pointer?: { column: number; row: number }) =>
+      $.ui.scroll({
+        component: 'Pane',
+        requestId: 'pulse-setup',
+        offset: 5 + by,
+        by,
+        bodyRows: 10,
+        contentRows: 20,
+        origin: person,
+        pointer,
+      } as never)
+
+    await at('b-cache')
+    await scroll(1)
+    await scroll(-1)
+    expect(f.scrolls).toEqual([])
+    // Above the first control and below the last, the arrow scrolls: the
+    // title and the key hints stay reachable.
+    await at('meter-bar')
+    await scroll(-1)
+    await at('next-bar')
+    await scroll(1)
+    expect(f.scrolls).toEqual([-1, 1])
+    // The wheel and the page keys always scroll.
+    await at('b-cache')
+    await scroll(1, { column: 3, row: 2 })
+    await scroll(10)
+    expect(f.scrolls).toEqual([-1, 1, 1, 10])
+    await pane.unmount()
   })
 
   test('when saving fails, Finish says so and offers to try again', async ($, on) => {

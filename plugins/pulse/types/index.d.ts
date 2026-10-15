@@ -54,6 +54,8 @@ declare module 'claude-code' {
       handoffReminded: boolean
       /** Null when the wizard is not being edited. */
       draft: Draft | null
+      /** The key of the wizard control holding the focus ring, as last moved. */
+      setupFocus: string | null
     }
   }
 }
