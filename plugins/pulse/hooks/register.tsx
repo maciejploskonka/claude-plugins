@@ -327,7 +327,7 @@ let setupWindow: { at: Record<string, number>; rows: number; window: number; fir
 const setupOffset = atom({ plugin: 'pulse', key: 'setupOffset' } as const, 0)
 
 // Moves the window just enough to show the control `key` holds the focus
-// on; for the top control, to the top, where the question is; for Back,
+// on; for the first control, to the top, with any label above it; for Back,
 // Next or Finish below it, to its end, where the preview is.
 const followFocus = async ($: EngineInterface, key: string) => {
   const w = setupWindow
@@ -707,10 +707,17 @@ export const register: Register = on => {
     const bar = c.features.bar ? await barRow($, e, c, { isWorking: false, isPreview: true, columns: width }) : null
     const preview = bar && stack('preview', [line('preview-label', 'Preview:', GREY), { el: bar.el, rows: bar.rows, at: {} }], 1)
 
+    // The step's question, on the title row.
+    const ask = {
+      features: 'Which parts of Pulse do you want?',
+      bar: 'What should the bar show?',
+      alarm: 'When should the context warning start?',
+      details: c.features.handoff ? 'Where should handoff notes go?' : '',
+    }[step]
+
     let middle: Part
     if (step === 'features') {
       middle = stack('body', [
-        line('ask', 'Which parts of Pulse do you want?'),
         toggle('f-bar', 'Usage bar — context, cache, limits and cost above the prompt', c.features.bar, o => ({
           ...o,
           features: { ...o.features, bar: !o.features.bar },
@@ -776,10 +783,9 @@ export const register: Register = on => {
       } else {
         items = stack('bar-column', [...left, ...right])
       }
-      middle = stack('body', [line('ask', 'What should the bar show?'), items, preview])
+      middle = stack('body', [items, preview])
     } else if (step === 'alarm') {
       middle = stack('body', [
-        line('ask', 'When should Pulse warn you that the context is filling up?'),
         choose(
           'alarm',
           'Warn from: ',
@@ -792,7 +798,6 @@ export const register: Register = on => {
       ])
     } else {
       middle = stack('body', [
-        c.features.handoff && line('ask', 'Where should handoff notes go?'),
         c.features.handoff &&
           choose(
             'handoff-dir',
@@ -829,9 +834,15 @@ export const register: Register = on => {
     ]
     return (
       <Box flexDirection="column" width={width}>
-        <Box key="title">
-          <Text color="claude">Pulse setup</Text>
-          <Text color={GREY} dimColor>{` · step ${i + 1}/${list.length}`}</Text>
+        {/* The question on the left, where the eye starts; the wizard's name on the right. */}
+        <Box key="title" justifyContent="space-between">
+          <Box key="ask" flexShrink={1}>
+            <Text wrap="truncate-end">{ask}</Text>
+          </Box>
+          <Box key="step" flexShrink={0} marginLeft={2}>
+            <Text color="claude">Pulse setup</Text>
+            <Text color={GREY} dimColor>{` · step ${i + 1}/${list.length}`}</Text>
+          </Box>
         </Box>
         {isClipped ? (
           <Box key="window" flexDirection="column" height={room} overflow="hidden" flexShrink={0}>

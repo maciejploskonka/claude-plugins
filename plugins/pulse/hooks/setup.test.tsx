@@ -254,18 +254,18 @@ describe('setup wizard', () => {
     expect(await pane.find({ text: /step 2\/4/ })).toBeDefined()
     expect(await shift()).toBe(-0)
 
-    // The question, 5 rows of items, a blank, then the preview: its label,
-    // the bar wrapped to 2 rows at 80 columns, the buttons. 11 rows.
+    // 5 rows of items, a blank, then the preview: its label, the bar
+    // wrapped to 2 rows at 80 columns, the buttons. 10 rows.
     // An item already showing leaves the window where it is.
     await at('b-handoff')
     expect(await shift()).toBe(-0)
     // Back and Next take it to the end, where the preview is.
     await at('next-bar')
-    expect(await shift()).toBe(-3)
-    // Going up, it stays while the item shows (row 3 is its top row)...
+    expect(await shift()).toBe(-2)
+    // Going up, it stays while the item shows (row 2 is its top row)...
     await at('meter-number')
-    expect(await shift()).toBe(-3)
-    // ...and the top item brings the question back too.
+    expect(await shift()).toBe(-2)
+    // ...and the top item brings the meter's label back too.
     await at('meter-bar')
     expect(await shift()).toBe(-0)
     await at('next-bar')
@@ -283,9 +283,9 @@ describe('setup wizard', () => {
         pointer: { column: 3, row: 2 },
       } as never)
     await wheel(5)
-    expect(await shift()).toBe(-3)
-    await wheel(-1)
     expect(await shift()).toBe(-2)
+    await wheel(-1)
+    expect(await shift()).toBe(-1)
     expect(f.scrolls).toEqual([])
     await pane.unmount()
   })
