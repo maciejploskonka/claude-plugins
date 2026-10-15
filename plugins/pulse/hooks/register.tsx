@@ -575,10 +575,6 @@ export const register: Register = on => {
 
     if (d.result) {
       const r = d.result
-      const turnedOn = [
-        c.features.bar ? `usage bar (warns at ${c.alarm}%)` : null,
-        c.features.handoff ? (c.features.bar ? 'handoff' : `handoff (reminds at ${c.alarm}%)`) : null,
-      ].filter(Boolean)
       return (
         <Box flexDirection="column" width={Math.max(20, e.props.bodyColumns)}>
           <Text color="claude">Pulse setup</Text>
@@ -586,7 +582,6 @@ export const register: Register = on => {
             {r.ok ? (
               <>
                 <Text color="success">✓ Pulse is set up. You're ready to roll.</Text>
-                <Text>{turnedOn.length > 0 ? `On: ${turnedOn.join(', ')}.` : 'Everything is off: Pulse stays quiet.'}</Text>
                 <Text color={GREY} dimColor>Change it any time with /pulse-setup.</Text>
               </>
             ) : (

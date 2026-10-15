@@ -44,10 +44,10 @@ describe('setup wizard', () => {
       await pane.press({ key: 'alarm-50' })
       expect(await pane.find({ text: /Yellow from 50%, red from 65%\./ })).toBeDefined()
       await pane.press({ key: 'finish' })
-      // A result screen, not an instant close: it says it worked and what is on.
+      // A result screen, not an instant close: it says it worked, no list of what is on.
       expect(f.closed).not.toContain('pulse-setup')
       expect(await pane.find({ text: /✓ Pulse is set up\. You're ready to roll\./ })).toBeDefined()
-      expect(await pane.find({ text: /On: usage bar \(warns at 50%\)/ })).toBeDefined()
+      expect(await pane.find({ text: /^On: / })).toBeUndefined()
       expect(await pane.find({ text: /Change it any time with \/pulse-setup\./ })).toBeDefined()
       expect((await pane.find({ type: 'Button', key: 'done-close' }))?.props?.hotkey).toBe('c')
       await pane.press({ key: 'done-close' })
