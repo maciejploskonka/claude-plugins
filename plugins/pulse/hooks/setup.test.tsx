@@ -262,6 +262,11 @@ describe('setup wizard', () => {
         pointer,
       } as never)
 
+    // A new step starts on Next, its last control: Down from there scrolls.
+    await scroll(1)
+    expect(f.scrolls).toEqual([1])
+    f.scrolls.length = 0
+
     await at('b-cache')
     await scroll(1)
     await scroll(-1)

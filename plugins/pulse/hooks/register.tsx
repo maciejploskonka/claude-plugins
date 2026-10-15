@@ -456,7 +456,8 @@ export const register: Register = on => {
     if (e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1 || !d) return next(e)
     const order = focusOrder(d)
     const at = order.indexOf((await read($, setupFocus)) ?? '')
-    const key = order[at === -1 ? (e.by > 0 ? 0 : order.length - 1) : at + e.by]
+    // Not known yet: the ring is where every screen starts it, on its last button.
+    const key = order[(at === -1 ? order.length - 1 : at) + e.by]
     if (key === undefined) return next(e)
     await $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
     return {}
@@ -470,7 +471,10 @@ export const register: Register = on => {
   // Closed any way but Finish: the draft is dropped, nothing saved.
   on('ui.close', async ($, e, next) => {
     const done = await next(e)
-    if (e.id === SETUP_PANE) await update($, draft, () => null)
+    if (e.id === SETUP_PANE) {
+      await update($, draft, () => null)
+      await update($, setupFocus, () => null)
+    }
     return done
   })
 
@@ -489,9 +493,14 @@ export const register: Register = on => {
         return { ...base, config: fn(base.config) }
       })
     // Every step starts on Next (Finish on the last): Enter moves on, Up fixes.
+    // Noted here too: the ring's own `ui.focus` can come before the redraw it waits for.
+    const focusOn = async (key: string) => {
+      await update($, setupFocus, () => key)
+      void $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
+    }
     const go = async (to: number) => {
       await update($, draft, old => ({ ...(old ?? d), step: to }))
-      void $.ui.focus({ requestId: SETUP_PANE, key: nextKeyOf(list, to) }).catch(() => {})
+      await focusOn(nextKeyOf(list, to))
     }
     // Saves, then shows how it went in place of the steps; Close ends it.
     const finish = async () => {
@@ -506,7 +515,7 @@ export const register: Register = on => {
         result = { ok: false, error: why.replace(/^.*\$\.store\.set: /, '') }
       }
       await update($, draft, old => ({ ...(old ?? d), result }))
-      void $.ui.focus({ requestId: SETUP_PANE, key: result.ok ? 'done-close' : 'done-retry' }).catch(() => {})
+      await focusOn(result.ok ? 'done-close' : 'done-retry')
     }
     const closeWizard = async () => {
       await update($, draft, () => null)
