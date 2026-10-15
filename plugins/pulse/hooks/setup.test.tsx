@@ -32,8 +32,15 @@ describe('setup wizard', () => {
       await next(pane)
       await pane.press({ key: 'b-cost' })
       await pane.press({ key: 'meter-number' })
-      expect(await pane.find({ text: /\$1\.23/ })).toBeUndefined()
-      expect((await pane.find({ key: 'preview' }))?.text).not.toMatch(/█/)
+      // Under the wizard, the bar's place previews the answers: no cost, no meter bar.
+      f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+      const under = await $.ui.mount({ plugin: 'pulse', surface, ...BAND })
+      const shown = (await under.find({ key: 'setup-preview' }))?.text ?? ''
+      expect(shown).toMatch(/^Preview: ctx/)
+      expect(shown).not.toMatch(/█|\$1\.23/)
+      await under.unmount()
+      f.panes = []
+      expect(await pane.find({ text: /Preview|ctx / })).toBeUndefined()
 
       await pane.press({ key: 'back' })
       expect(await pane.find({ text: /step 1\/3/ })).toBeDefined()
@@ -241,34 +248,33 @@ describe('setup wizard', () => {
   test('in a short pane the title, Back, Next and hints stay; the middle scrolls under the focus', async ($, on) => {
     const f = engine(on)
     await $.session.start(START)
-    const props = { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 11 } }
+    const props = { ...PANE_PROPS, scroll: { offset: 0, bodyRows: 8 } }
     const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE, props } as never)) as Wizard
     await next(pane)
     const person = { kind: 'person' } as const
     const at = (element: string) =>
       $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element, origin: person } as never)
     const shift = async () => (await pane.find({ key: 'window-rows' }))?.props?.marginTop
-    // 11 rows: title, an 8-row window, Back and Next, hints.
-    expect((await pane.find({ key: 'window' }))?.props?.height).toBe(8)
+    // 8 rows: title, a blank, a 4-row window, Back and Next, hints.
+    expect((await pane.find({ key: 'window' }))?.props?.height).toBe(4)
+    expect((await pane.find({ key: 'window' }))?.props?.marginTop).toBe(1)
     expect((await pane.find({ key: 'nav' }))?.text).toMatch(/Back.*Next/)
     expect(await pane.find({ text: /step 2\/4/ })).toBeDefined()
     expect(await shift()).toBe(-0)
 
-    // 5 rows of items, a blank, then the preview: its label, the bar
-    // wrapped to 2 rows at 80 columns, the buttons. 10 rows.
-    // An item already showing leaves the window where it is.
+    // The step's middle is 5 rows: the meter's label, then the items.
+    // The window follows the focus down by as little as shows it...
     await at('b-handoff')
-    expect(await shift()).toBe(-0)
-    // Back and Next take it to the end, where the preview is.
-    await at('next-bar')
-    expect(await shift()).toBe(-2)
-    // Going up, it stays while the item shows (row 2 is its top row)...
+    expect(await shift()).toBe(-1)
+    // ...stays while the focused item shows...
     await at('meter-number')
-    expect(await shift()).toBe(-2)
+    expect(await shift()).toBe(-1)
     // ...and the top item brings the meter's label back too.
     await at('meter-bar')
     expect(await shift()).toBe(-0)
+    // Back and Next take it to the end.
     await at('next-bar')
+    expect(await shift()).toBe(-1)
 
     // The wheel moves the window, within its ends; the frame never moves.
     const wheel = (by: number) =>
@@ -277,15 +283,15 @@ describe('setup wizard', () => {
         requestId: 'pulse-setup',
         offset: 0,
         by,
-        bodyRows: 11,
-        contentRows: 11,
+        bodyRows: 8,
+        contentRows: 8,
         origin: person,
         pointer: { column: 3, row: 2 },
       } as never)
     await wheel(5)
-    expect(await shift()).toBe(-2)
-    await wheel(-1)
     expect(await shift()).toBe(-1)
+    await wheel(-1)
+    expect(await shift()).toBe(-0)
     expect(f.scrolls).toEqual([])
     await pane.unmount()
   })
@@ -386,8 +392,8 @@ describe('setup wizard', () => {
     }
   })
 
-  test('hints and the step counter use the bar\'s grey', async ($, on) => {
-    engine(on)
+  test('hints, the step counter and the preview label use the bar\'s grey', async ($, on) => {
+    const f = engine(on)
     await $.session.start(START)
     const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
     expect((await pane.find({ type: 'Text', text: /step 1\/4/ }))?.props?.color).toBe('inactive')
@@ -395,9 +401,14 @@ describe('setup wizard', () => {
     expect((await pane.find({ type: 'Text', text: /↑↓ move/ }))?.props?.dimColor).toBe(true)
     await next(pane)
     await next(pane)
-    expect((await pane.find({ type: 'Text', text: /^Preview:$/ }))?.props?.color).toBe('inactive')
     expect((await pane.find({ type: 'Text', text: /Yellow from/ }))?.props?.color).toBe('inactive')
     await pane.unmount()
+
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    const label = await band.find({ type: 'Text', text: /^Preview: $/ })
+    expect([label?.props?.color, label?.props?.dimColor]).toEqual(['inactive', true])
+    await band.unmount()
   })
 
   // A key only the new step draws: $.ui.focus waits for that drawing
@@ -416,19 +427,51 @@ describe('setup wizard', () => {
     await pane.unmount()
   })
 
-  test('a fresh session previews every ticked item with sample numbers', async ($, on) => {
+  test('a fresh session previews every ticked item with sample numbers, under the wizard', async ($, on) => {
     const f = engine(on)
     f.ctx = { percent: undefined, tokens: undefined }
     f.limits = []
     await $.session.start(START)
-    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
-    await next(pane)
-    const preview = (await pane.find({ key: 'preview' }))?.text ?? ''
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    const preview = (await band.find({ key: 'setup-preview' }))?.text ?? ''
     expect(preview).toMatch(/ctx █+░+ 21% 42k\/200k/)
     expect(preview).toMatch(/cache 98%/)
     expect(preview).toMatch(/5h \d+% resets \d/)
     expect(preview).toMatch(/7d \d+% resets \d/)
     expect(preview).toMatch(/\$/)
-    await pane.unmount()
+    // The buttons as text: a preview presses nothing.
+    expect(await band.find({ type: 'Button', key: 'summarize' })).toBeUndefined()
+    await band.unmount()
+  })
+
+  test('given one row under the wizard, the preview is one row: no rule, no buttons', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+    const tight = { ...BAND, props: { ...BAND.props, maxRows: 2, scroll: { offset: 0, bodyRows: 1 } } }
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...tight } as never)
+    expect((await band.find({ key: 'setup-preview' }))?.props?.height).toBe(1)
+    expect(await band.find({ text: /─{10}/ })).toBeUndefined()
+    expect(await band.find({ text: /\[ Summarize \]/ })).toBeUndefined()
+    expect((await band.find({ key: 'setup-preview' }))?.text).toMatch(/^Preview: ctx/)
+    await band.unmount()
+  })
+
+  test('the preview takes the bar\'s place only while the wizard is on screen', async ($, on) => {
+    const f = engine(on, { config: { ...defaults(), setupDone: true } })
+    await $.session.start(START)
+    await runCommand($, 'pulse-setup')
+    f.panes = [{ id: 'pulse-setup', title: 'Pulse setup', isShown: true, isFocused: true, isPlaced: true }]
+    const band = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    expect(await band.find({ key: 'setup-preview' })).toBeDefined()
+    await band.unmount()
+
+    // Placed nowhere (a narrow terminal): the real bar, with its buttons.
+    f.panes = []
+    const narrow = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    expect(await narrow.find({ key: 'setup-preview' })).toBeUndefined()
+    expect(await narrow.find({ type: 'Button', key: 'summarize' })).toBeDefined()
+    await narrow.unmount()
   })
 })

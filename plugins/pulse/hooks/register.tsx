@@ -183,7 +183,7 @@ const barRow = async (
     }
   }
 
-  // With its height, which the setup window counts.
+  // With the rows it takes, which the setup preview fits into what it gets.
   const el = (
     <Box key="bar" flexDirection="column">
       <Box key="bar-stats" flexDirection="column">
@@ -328,7 +328,7 @@ const setupOffset = atom({ plugin: 'pulse', key: 'setupOffset' } as const, 0)
 
 // Moves the window just enough to show the control `key` holds the focus
 // on; for the first control, to the top, with any label above it; for Back,
-// Next or Finish below it, to its end, where the preview is.
+// Next or Finish below it, to its end.
 const followFocus = async ($: EngineInterface, key: string) => {
   const w = setupWindow
   if (!w) return
@@ -371,16 +371,18 @@ const useDefaults = async ($: EngineInterface) => {
   await $.ui.close({ id: SETUP_PANE })
 }
 
+const isSetupUp = async ($: EngineInterface) => {
+  try {
+    return (await $.ui.panes()).some(p => p.id === SETUP_PANE && p.isPlaced)
+  } catch {
+    return false
+  }
+}
+
 // Above the prompt until the person picks, unless the wizard is on screen.
 const setupRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
   if (cfg.setupDone) return null
-  let isUp = false
-  try {
-    isUp = (await $.ui.panes()).some(p => p.id === SETUP_PANE && p.isPlaced)
-  } catch {
-    isUp = false
-  }
-  if (isUp) return null
+  if (await isSetupUp($)) return null
 
   const { Box, Button, Text } = $.ui.resolve(e)
   return (
@@ -399,6 +401,44 @@ const setupRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
       <Button key="setup-defaults" label="Use defaults" variant="secondary" onPress={() => useDefaults($)} />
     </Box>
   )
+}
+
+const PREVIEW_LABEL = 'Preview: '
+
+// While the wizard is up and unsaved, the bar's place under it shows the bar
+// as the wizard's answers would draw it (sample numbers where none are in
+// yet, buttons as text); null otherwise, and the real bar stands.
+//
+// The engine gives the band few rows while a pane is up (one, in a 40-row
+// terminal), so it fits `room`: the label beside the bar, not above it,
+// the buttons dropped when they do not fit, and what still does not, cut.
+const previewRow = async ($: EngineInterface, e: RenderIn, columns: number, room: number) => {
+  const d = await read($, draft)
+  if (!d || d.result || !(await isSetupUp($))) return null
+  const { Box, Text } = $.ui.resolve(e)
+  const label = (
+    <Text key="setup-preview-label" color={GREY} dimColor>
+      {d.config.features.bar ? PREVIEW_LABEL : `${PREVIEW_LABEL}no usage bar.`}
+    </Text>
+  )
+  if (!d.config.features.bar) return { el: <Box key="setup-preview">{label}</Box>, rows: 1 }
+
+  const opts = { isWorking: false, isPreview: true, columns: Math.max(10, columns - PREVIEW_LABEL.length) }
+  let bar = await barRow($, e, d.config, opts)
+  if (bar.rows > room) {
+    const bare = { ...d.config, bar: { ...d.config.bar, buttons: { summarize: false, handoff: false } } }
+    bar = await barRow($, e, bare, opts)
+  }
+  const rows = Math.max(1, Math.min(bar.rows, room))
+  return {
+    el: (
+      <Box key="setup-preview" height={rows} overflow="hidden">
+        {label}
+        {bar.el}
+      </Box>
+    ),
+    rows,
+  }
 }
 
 // ── Hooks ───────────────────────────────────────────────────────────────
@@ -704,9 +744,6 @@ export const register: Register = on => {
       }
     }
 
-    const bar = c.features.bar ? await barRow($, e, c, { isWorking: false, isPreview: true, columns: width }) : null
-    const preview = bar && stack('preview', [line('preview-label', 'Preview:', GREY), { el: bar.el, rows: bar.rows, at: {} }], 1)
-
     // The step's question, on the title row.
     const ask = {
       features: 'Which parts of Pulse do you want?',
@@ -783,7 +820,7 @@ export const register: Register = on => {
       } else {
         items = stack('bar-column', [...left, ...right])
       }
-      middle = stack('body', [items, preview])
+      middle = stack('body', [items])
     } else if (step === 'alarm') {
       middle = stack('body', [
         choose(
@@ -794,7 +831,6 @@ export const register: Register = on => {
           v => edit(o => ({ ...o, alarm: (ALARMS.find(a => String(a) === v) ?? 75) as Alarm })),
         ),
         line('levels', `Yellow from ${c.alarm}%, red from ${redLevel(c.alarm)}%.`, GREY),
-        preview,
       ])
     } else {
       middle = stack('body', [
@@ -815,12 +851,13 @@ export const register: Register = on => {
       ])
     }
 
-    // The title stays on the top row and Back, Next and the hints on the
-    // bottom two. Between them, when the step is taller than the pane gives,
-    // a window Pulse scrolls itself: it follows the focus, and the wheel and
-    // page keys move it. A pane too short even for that scrolls whole.
-    const room = e.props.scroll.bodyRows - 3
-    const isClipped = middle.rows + 2 > room && room >= WINDOW_MIN
+    // The title stays on the top row, a blank under it, and Back, Next and
+    // the hints on the bottom two. Between them, when the step is taller than
+    // the pane gives, a window Pulse scrolls itself: it follows the focus,
+    // and the wheel and page keys move it. A pane too short even for that
+    // scrolls whole. Drawn whole, the step also has a blank above Back.
+    const room = e.props.scroll.bodyRows - 4
+    const isClipped = middle.rows + 1 > room && room >= WINDOW_MIN
     setupWindow = isClipped ? { at: middle.at, rows: middle.rows, window: room, first } : null
     const offset = isClipped ? Math.min(Math.max(0, await read($, setupOffset)), middle.rows - room) : 0
 
@@ -845,7 +882,7 @@ export const register: Register = on => {
           </Box>
         </Box>
         {isClipped ? (
-          <Box key="window" flexDirection="column" height={room} overflow="hidden" flexShrink={0}>
+          <Box key="window" flexDirection="column" height={room} overflow="hidden" flexShrink={0} marginTop={1}>
             <Box key="window-rows" flexDirection="column" flexShrink={0} marginTop={-offset}>
               {middle.el}
             </Box>
@@ -893,19 +930,26 @@ export const register: Register = on => {
     if (e.props.hasSurvey) return below
 
     const cfg = await read($, config)
+    const room = e.props.scroll.bodyRows
+    const preview = await previewRow($, e, e.props.bodyColumns, room)
     const rows = [
       await setupRow($, e, cfg),
       await handoffRow($, e, cfg),
-      cfg.features.bar
-        ? (await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns })).el
-        : null,
+      preview
+        ? preview.el
+        : cfg.features.bar
+          ? (await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns })).el
+          : null,
     ].filter(row => row !== null)
     if (rows.length === 0) return below
 
     const { Box, Text } = $.ui.resolve(e)
     return (
       <Box flexDirection="column">
-        <Text color="promptBorder">{'─'.repeat(Math.max(10, e.props.bodyColumns))}</Text>
+        {/* The rule gives way first when the preview needs its row. */}
+        {!(preview && preview.rows >= room) && (
+          <Text color="promptBorder">{'─'.repeat(Math.max(10, e.props.bodyColumns))}</Text>
+        )}
         {below}
         {rows}
       </Box>

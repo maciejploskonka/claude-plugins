@@ -138,5 +138,6 @@ restart Claude Code if the new version does not show.
 - **0.1.2**: In a short setup pane, Up and Down move between choices instead of scrolling.
   Each setup step starts at its top item, so the step number shows; the bar step uses two columns.
   In a short pane the title, Back/Next and the key hints stay put and only the middle scrolls.
+  The bar preview moved out of the setup pane to the bar's own place below it.
 - **0.1.1**: Rate limits show placeholders until the first answer.
 - **0.1.0**: First release.
