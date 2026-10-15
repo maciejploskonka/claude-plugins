@@ -3,7 +3,19 @@ import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Alarm, CacheTotals, Config, Draft, SetupResult, UsageSnapshot } from '../types'
 import { GREY, TRACK, cacheColor, ctxColor, limitColor, redLevel } from './colors'
-import { ALARMS, HINT, STORE_KEY, defaults, fromRaw, isObj, steps } from './config'
+import {
+  ALARMS,
+  HINT,
+  STORE_KEY,
+  defaults,
+  focusOrder,
+  fromRaw,
+  isObj,
+  needsHandoffCommand,
+  nextKeyOf,
+  startKey,
+  steps,
+} from './config'
 import {
   LIMIT_NAMES,
   RESUME_PROMPT,
@@ -48,6 +60,18 @@ const loadConfig = async ($: EngineInterface): Promise<Config> => {
 const saveConfig = async ($: EngineInterface, cfg: Config) => {
   await $.store.set(STORE_KEY, cfg)
   await update($, config, () => cfg)
+  await offerHandoffCommand($, cfg)
+}
+
+// /pulse-handoff only where no Handoff button is there to press. The engine
+// cannot take a command back, so one turned unneeded stays till the next
+// session, where it is not registered; it still works meanwhile.
+const offerHandoffCommand = async ($: EngineInterface, cfg: Config) => {
+  if (!needsHandoffCommand(cfg)) return
+  await $.command.register({
+    name: 'pulse-handoff',
+    description: 'Write a handoff note, then clear and continue from it',
+  })
 }
 
 // ── Usage bar ───────────────────────────────────────────────────────────
@@ -183,7 +207,8 @@ const barRow = async (
     }
   }
 
-  return (
+  // With the rows it takes, which the setup window counts.
+  const el = (
     <Box key="bar" flexDirection="column">
       <Box key="bar-stats" flexDirection="column">
         {rows.map((row, n) => (
@@ -208,6 +233,7 @@ const barRow = async (
       )}
     </Box>
   )
+  return { el, rows: rows.length + (isActing ? 1 : 0) }
 }
 
 // ── Handoff ─────────────────────────────────────────────────────────────
@@ -292,7 +318,8 @@ const handoffOnTurnEnd = async ($: EngineInterface, cfg: Config) => {
   if (phase === 'idle' && percent !== null && percent >= cfg.alarm && !(await read($, handoffReminded))) {
     // Once per conversation; the lit Handoff button carries it from here.
     await update($, handoffReminded, () => true)
-    $.ui.toast(`Context ${percent}% full — time for a handoff (/pulse-handoff).`)
+    const how = needsHandoffCommand(cfg) ? '/pulse-handoff' : 'press Handoff below'
+    $.ui.toast(`Context ${percent}% full — time for a handoff (${how}).`)
   }
 }
 
@@ -309,8 +336,40 @@ const handoffOnClear = async ($: EngineInterface) => {
 // ── Setup wizard ────────────────────────────────────────────────────────
 
 const SETUP_PANE = 'pulse-setup'
+// The bar step's two columns: the left one's width, and the body width they need.
+const BAR_LEFT_WIDTH = 32
+const BAR_COLUMNS_MIN = 60
+// The fewest rows the scrolled window between title and footer is worth.
+const WINDOW_MIN = 3
+
+// A piece of a step's middle: what it draws, the rows it takes, and the row
+// each of its controls sits on, by key, counted from its top.
+type Part = { el: RenderChildren; rows: number; at: Record<string, number> }
+
+// The window over the step's middle as last drawn; null while it all fits
+// (or the pane is too short for one, and scrolls whole instead).
+let setupWindow: { at: Record<string, number>; rows: number; window: number; first: string } | null = null
+const setupOffset = atom({ plugin: 'pulse', key: 'setupOffset' } as const, 0)
+
+// Moves the window just enough to show the control `key` holds the focus
+// on; for the first control, to the top, with any label above it; for Back,
+// Next or Finish below it, to its end.
+const followFocus = async ($: EngineInterface, key: string) => {
+  const w = setupWindow
+  if (!w) return
+  const last = w.rows - w.window
+  const row = w.at[key]
+  await update($, setupOffset, off =>
+    row === undefined
+      ? last
+      : key === w.first
+        ? 0
+        : Math.max(0, Math.min(last, row, Math.max(off, row - w.window + 1))),
+  )
+}
 
 const draft = atom({ plugin: 'pulse', key: 'draft' } as const, null)
+const setupFocus = atom({ plugin: 'pulse', key: 'setupFocus' } as const, null)
 
 // Starts a draft from the saved config and opens the pane.
 const openSetup = async ($: EngineInterface) => {
@@ -337,16 +396,18 @@ const useDefaults = async ($: EngineInterface) => {
   await $.ui.close({ id: SETUP_PANE })
 }
 
+const isSetupUp = async ($: EngineInterface) => {
+  try {
+    return (await $.ui.panes()).some(p => p.id === SETUP_PANE && p.isPlaced)
+  } catch {
+    return false
+  }
+}
+
 // Above the prompt until the person picks, unless the wizard is on screen.
 const setupRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
   if (cfg.setupDone) return null
-  let isUp = false
-  try {
-    isUp = (await $.ui.panes()).some(p => p.id === SETUP_PANE && p.isPlaced)
-  } catch {
-    isUp = false
-  }
-  if (isUp) return null
+  if (await isSetupUp($)) return null
 
   const { Box, Button, Text } = $.ui.resolve(e)
   return (
@@ -376,10 +437,7 @@ export const register: Register = on => {
     const cfg = await loadConfig($)
     await $.command.register({ name: 'pulse-setup', description: 'Choose what Pulse shows and how' })
     await $.command.register({ name: 'pulse-reset', description: 'Restore Pulse’s default settings' })
-    await $.command.register({
-      name: 'pulse-handoff',
-      description: 'Write a handoff note, then clear and continue from it',
-    })
+    await offerHandoffCommand($, cfg)
     await refreshUsage($)
     // Stops on reload, and session.start fires again then.
     $.clock.every(REFRESH_MS, () => void refreshUsage($))
@@ -438,9 +496,39 @@ export const register: Register = on => {
   // An arrow past the wizard's edge would carry the focus out of it (to the
   // pane's close mark, another tab or the session list). Keep it on the
   // wizard's own controls; Esc still hands the keyboard back.
-  on('ui.focus', { requestId: SETUP_PANE }, ($, e, next) =>
-    e.origin.kind === 'person' && e.element === undefined ? {} : next(e),
-  )
+  // It also remembers where the ring lands, for the arrows below.
+  on('ui.focus', { requestId: SETUP_PANE }, async ($, e, next) => {
+    if (e.origin.kind === 'person' && e.element === undefined) return {}
+    const done = await next(e)
+    if (!done.deny && e.element !== undefined) {
+      await update($, setupFocus, () => e.element ?? null)
+      await followFocus($, e.element)
+    }
+    return done
+  })
+
+  // While the wizard is taller than its pane, the engine spends an arrow on
+  // scrolling a row. Spend it on the next control instead: the engine keeps
+  // the focused one in view. Past the first or last control the arrow
+  // scrolls, so the title and the key hints can still be reached.
+  on('ui.scroll', { requestId: SETUP_PANE }, async ($, e, next) => {
+    // The wheel and page keys move Pulse's own window, when there is one.
+    const w = setupWindow
+    if (w && e.origin.kind === 'person' && (e.pointer !== undefined || Math.abs(e.by) !== 1)) {
+      const last = w.rows - w.window
+      await update($, setupOffset, off => Math.max(0, Math.min(last, off + e.by)))
+      return {}
+    }
+    const d = await read($, draft)
+    if (e.origin.kind !== 'person' || e.pointer !== undefined || Math.abs(e.by) !== 1 || !d) return next(e)
+    const order = focusOrder(d)
+    const at = order.indexOf((await read($, setupFocus)) ?? '')
+    // Not known yet: the ring is where every screen starts it.
+    const key = order[(at === -1 ? order.indexOf(startKey(d)) : at) + e.by]
+    if (key === undefined) return next(e)
+    await $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
+    return {}
+  })
 
   on('command.run', { command: 'pulse-reset' }, async $ => {
     await useDefaults($)
@@ -450,7 +538,11 @@ export const register: Register = on => {
   // Closed any way but Finish: the draft is dropped, nothing saved.
   on('ui.close', async ($, e, next) => {
     const done = await next(e)
-    if (e.id === SETUP_PANE) await update($, draft, () => null)
+    if (e.id === SETUP_PANE) {
+      await update($, draft, () => null)
+      await update($, setupFocus, () => null)
+      await update($, setupOffset, () => 0)
+    }
     return done
   })
 
@@ -468,14 +560,21 @@ export const register: Register = on => {
         const base = old ?? d
         return { ...base, config: fn(base.config) }
       })
-    // Every step starts on Next (Finish on the last): Enter moves on, Up fixes.
-    // Next's key names its step, so the focus waits for the new step's button
-    // rather than landing on the old one before the redraw.
-    const nextKeyOf = (n: number) => (n >= list.length - 1 ? 'finish' : `next-${list[n]}`)
-    const go = async (to: number) => {
-      await update($, draft, old => ({ ...(old ?? d), step: to }))
-      void $.ui.focus({ requestId: SETUP_PANE, key: nextKeyOf(to) }).catch(() => {})
+    // Noted here too: the ring's own `ui.focus` can come before the redraw it waits for.
+    const focusOn = async (key: string) => {
+      await update($, setupFocus, () => key)
+      void $.ui.focus({ requestId: SETUP_PANE, key }).catch(() => {})
     }
+    // Every step starts at its top: the step number shows, the focus on the
+    // first control. n moves on from anywhere.
+    const go = async (to: number) => {
+      const moved = { ...((await read($, draft)) ?? d), step: to }
+      await update($, draft, () => moved)
+      await update($, setupOffset, () => 0)
+      await focusOn(startKey(moved))
+      void $.ui.scroll({ in: SETUP_PANE, to: 'start' }).catch(() => {})
+    }
+    const first = startKey(d)
     // Saves, then shows how it went in place of the steps; Close ends it.
     const finish = async () => {
       const latest = (await read($, draft))?.config ?? c
@@ -489,7 +588,7 @@ export const register: Register = on => {
         result = { ok: false, error: why.replace(/^.*\$\.store\.set: /, '') }
       }
       await update($, draft, old => ({ ...(old ?? d), result }))
-      void $.ui.focus({ requestId: SETUP_PANE, key: result.ok ? 'done-close' : 'done-retry' }).catch(() => {})
+      await focusOn(result.ok ? 'done-close' : 'done-retry')
     }
     const closeWizard = async () => {
       await update($, draft, () => null)
@@ -498,10 +597,6 @@ export const register: Register = on => {
 
     if (d.result) {
       const r = d.result
-      const turnedOn = [
-        c.features.bar ? `usage bar (warns at ${c.alarm}%)` : null,
-        c.features.handoff ? (c.features.bar ? 'handoff' : `handoff (reminds at ${c.alarm}%)`) : null,
-      ].filter(Boolean)
       return (
         <Box flexDirection="column" width={Math.max(20, e.props.bodyColumns)}>
           <Text color="claude">Pulse setup</Text>
@@ -509,7 +604,6 @@ export const register: Register = on => {
             {r.ok ? (
               <>
                 <Text color="success">✓ Pulse is set up. You're ready to roll.</Text>
-                <Text>{turnedOn.length > 0 ? `On: ${turnedOn.join(', ')}.` : 'Everything is off: Pulse stays quiet.'}</Text>
                 <Text color={GREY} dimColor>Change it any time with /pulse-setup.</Text>
               </>
             ) : (
@@ -534,12 +628,30 @@ export const register: Register = on => {
       )
     }
 
+    const width = Math.max(20, e.props.bodyColumns)
+    // The rows a string takes at `cols` wide, as the terminal wraps it.
+    const tall = (s: string, cols = width) => Math.max(1, Math.ceil(s.length / Math.max(1, cols)))
+
     // No digit keys: a digit is the engine's (band surveys) and leaves the pane.
-    const toggle = (key: string, label: string, isOn: boolean, flip: (old: Config) => Config) => (
-      <Box key={key}>
-        <Button key={key} plain dimColor={!isOn} label={`${isOn ? '[x]' : '[ ]'} ${label}`} onPress={() => edit(flip)} />
-      </Box>
-    )
+    const toggle = (key: string, label: string, isOn: boolean, flip: (old: Config) => Config, cols = width): Part => {
+      const text = `${isOn ? '[x]' : '[ ]'} ${label}`
+      return {
+        el: (
+          <Box key={key}>
+            <Button
+              key={key}
+              plain
+              dimColor={!isOn}
+              autoFocus={key === first ? true : undefined}
+              label={text}
+              onPress={() => edit(flip)}
+            />
+          </Box>
+        ),
+        rows: tall(text, cols),
+        at: { [key]: 0 },
+      }
+    }
 
     // A one-of-several pick: one option per line rather than a dropdown, so
     // Up and Down reach each and Enter picks. Left and Right are the engine's
@@ -550,45 +662,97 @@ export const register: Register = on => {
       value: string,
       options: { value: string; label: string }[],
       pick: (v: string) => void,
-    ) => (
-      <Box key={key} flexDirection="column">
-        <Text>{label}</Text>
-        {options.map(o => (
-          <Box key={`${key}-${o.value}-row`} marginLeft={2}>
-            <Button
-              key={`${key}-${o.value}`}
-              plain
-              dimColor={o.value !== value}
-              label={`${o.value === value ? '(•)' : '( )'} ${o.label}`}
-              onPress={() => pick(o.value)}
-            />
+      cols = width,
+    ): Part => {
+      const text = (o: { value: string; label: string }) => `${o.value === value ? '(•)' : '( )'} ${o.label}`
+      const at: Record<string, number> = {}
+      let rows = 1
+      for (const o of options) {
+        at[`${key}-${o.value}`] = rows
+        rows += tall(text(o), cols - 2)
+      }
+      return {
+        el: (
+          <Box key={key} flexDirection="column">
+            <Text>{label}</Text>
+            {options.map(o => (
+              <Box key={`${key}-${o.value}-row`} marginLeft={2}>
+                <Button
+                  key={`${key}-${o.value}`}
+                  plain
+                  dimColor={o.value !== value}
+                  autoFocus={`${key}-${o.value}` === first ? true : undefined}
+                  label={text(o)}
+                  onPress={() => pick(o.value)}
+                />
+              </Box>
+            ))}
           </Box>
-        ))}
-      </Box>
-      )
+        ),
+        rows,
+        at,
+      }
+    }
 
-    const preview = c.features.bar ? (
-      <Box key="preview" flexDirection="column" marginTop={1}>
-        <Text color={GREY} dimColor>Preview:</Text>
-        {await barRow($, e, c, { isWorking: false, isPreview: true, columns: e.props.bodyColumns })}
-      </Box>
-    ) : null
+    const line = (key: string, s: string, color?: string): Part => ({
+      el: (
+        <Text key={key} color={color} dimColor={color === GREY ? true : undefined}>
+          {s}
+        </Text>
+      ),
+      rows: tall(s),
+      at: {},
+    })
+    // Parts one under another, their controls' rows counted from the top.
+    const stack = (key: string, list: (Part | null | false)[], marginTop = 0): Part => {
+      const shown = list.filter((p): p is Part => !!p)
+      const at: Record<string, number> = {}
+      let rows = marginTop
+      for (const p of shown) {
+        for (const [k, r] of Object.entries(p.at)) at[k] = rows + r
+        rows += p.rows
+      }
+      return {
+        el: (
+          <Box key={key} flexDirection="column" marginTop={marginTop}>
+            {shown.map(p => p.el)}
+          </Box>
+        ),
+        rows,
+        at,
+      }
+    }
 
-    let body
+    // The step's question, on the title row.
+    const ask = {
+      features: 'Which parts of Pulse do you want?',
+      bar: 'What should the bar show?',
+      alarm: 'When should the context warning start?',
+      details: c.features.handoff ? 'Where should handoff notes go?' : '',
+    }[step]
+
+    // The bar as these answers draw it, under the choices: only in the tall
+    // pane docked beside the transcript. Above the prompt the pane is short,
+    // and the room goes to the choices.
+    const bar =
+      c.features.bar && e.props.placement === 'dock'
+        ? await barRow($, e, c, { isWorking: false, isPreview: true, columns: width })
+        : null
+    const preview =
+      bar && stack('preview', [line('preview-label', 'Preview:', GREY), { el: bar.el, rows: bar.rows, at: {} }], 1)
+
+    let middle: Part
     if (step === 'features') {
-      body = (
-        <Box flexDirection="column">
-          <Text>Which parts of Pulse do you want?</Text>
-          {toggle('f-bar', 'Usage bar — context, cache, limits and cost above the prompt', c.features.bar, o => ({
-            ...o,
-            features: { ...o.features, bar: !o.features.bar },
-          }))}
-          {toggle('f-handoff', 'Handoff — write a note and start fresh when the context fills up', c.features.handoff, o => ({
-            ...o,
-            features: { ...o.features, handoff: !o.features.handoff },
-          }))}
-        </Box>
-      )
+      middle = stack('body', [
+        toggle('f-bar', 'Usage bar — context, cache, limits and cost above the prompt', c.features.bar, o => ({
+          ...o,
+          features: { ...o.features, bar: !o.features.bar },
+        })),
+        toggle('f-handoff', 'Handoff — write a note and start fresh when the context fills up', c.features.handoff, o => ({
+          ...o,
+          features: { ...o.features, handoff: !o.features.handoff },
+        })),
+      ])
     } else if (step === 'bar') {
       const flipBar = (k: 'tokens' | 'cache' | 'limits' | 'resets' | 'cost') => (o: Config) => ({
         ...o,
@@ -598,68 +762,94 @@ export const register: Register = on => {
         ...o,
         bar: { ...o.bar, buttons: { ...o.bar.buttons, [k]: !o.bar.buttons[k] } },
       })
-      body = (
-        <Box flexDirection="column">
-          <Text>What should the bar show?</Text>
-          {choose(
-            'meter',
-            'Context meter: ',
-            c.bar.meter,
-            [
-              { value: 'bar', label: 'Bar ██░░' },
-              { value: 'number', label: 'Number only' },
-            ],
-            v => edit(o => ({ ...o, bar: { ...o.bar, meter: v === 'number' ? 'number' : 'bar' } })),
-          )}
-          {toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens'))}
-          {toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache'))}
-          {toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits'))}
-          {toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets'))}
-          {toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost'))}
-          {toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize'))}
-          {c.features.handoff && toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff'))}
-          {preview}
-        </Box>
-      )
-    } else if (step === 'alarm') {
-      body = (
-        <Box flexDirection="column">
-          <Text>When should Pulse warn you that the context is filling up?</Text>
-          {choose(
-            'alarm',
-            'Warn from: ',
-            String(c.alarm),
-            ALARMS.map(a => ({ value: String(a), label: `${a}%` })),
-            v => edit(o => ({ ...o, alarm: (ALARMS.find(a => String(a) === v) ?? 75) as Alarm })),
-          )}
-          <Text color={GREY} dimColor>{`Yellow from ${c.alarm}%, red from ${redLevel(c.alarm)}%.`}</Text>
-          {preview}
-        </Box>
-      )
-    } else {
-      body = (
-        <Box flexDirection="column">
-          {c.features.handoff && (
-            <Box flexDirection="column">
-              <Text>Where should handoff notes go?</Text>
-              {choose(
-                'handoff-dir',
-                'Folder: ',
-                c.handoffDir,
-                [
-                  { value: 'home', label: '~/.claude/handoffs (outside your projects)' },
-                  { value: 'project', label: '.claude/handoffs in the project' },
-                ],
-                v => edit(o => ({ ...o, handoffDir: v === 'project' ? 'project' : 'home' })),
-              )}
-              {c.handoffDir === 'project' && (
-                <Text color="warning">Add .claude/handoffs/ to .gitignore so notes are not committed.</Text>
-              )}
+      // Two columns where they fit, so the step needs fewer rows. Up and Down
+      // still walk every item: the left column, then the right (focusOrder).
+      const isTwo = width >= BAR_COLUMNS_MIN
+      const leftCols = isTwo ? BAR_LEFT_WIDTH : width
+      const rightCols = isTwo ? width - BAR_LEFT_WIDTH : width
+      const left = [
+        choose(
+          'meter',
+          'Context meter: ',
+          c.bar.meter,
+          [
+            { value: 'bar', label: 'Bar ██░░' },
+            { value: 'number', label: 'Number only' },
+          ],
+          v => edit(o => ({ ...o, bar: { ...o.bar, meter: v === 'number' ? 'number' : 'bar' } })),
+          leftCols,
+        ),
+        toggle('b-tokens', 'Token count', c.bar.tokens, flipBar('tokens'), leftCols),
+        toggle('b-cache', 'Prompt cache hit rate', c.bar.cache, flipBar('cache'), leftCols),
+      ]
+      const right = [
+        toggle('b-limits', 'Rate limits (5h / 7d)', c.bar.limits, flipBar('limits'), rightCols),
+        toggle('b-resets', 'Time until limits reset', c.bar.resets, flipBar('resets'), rightCols),
+        toggle('b-cost', 'Session cost', c.bar.cost, flipBar('cost'), rightCols),
+        toggle('b-summarize', 'Summarize button', c.bar.buttons.summarize, flipButton('summarize'), rightCols),
+        c.features.handoff &&
+          toggle('b-handoff', 'Handoff button', c.bar.buttons.handoff, flipButton('handoff'), rightCols),
+      ]
+      let items: Part
+      if (isTwo) {
+        const l = stack('bar-left', left)
+        const r = stack('bar-right', right)
+        items = {
+          el: (
+            <Box key="bar-columns">
+              <Box key="bar-left-slot" width={BAR_LEFT_WIDTH}>
+                {l.el}
+              </Box>
+              {r.el}
             </Box>
-          )}
-        </Box>
-      )
+          ),
+          rows: Math.max(l.rows, r.rows),
+          at: { ...l.at, ...r.at },
+        }
+      } else {
+        items = stack('bar-column', [...left, ...right])
+      }
+      middle = stack('body', [items, preview])
+    } else if (step === 'alarm') {
+      middle = stack('body', [
+        choose(
+          'alarm',
+          'Warn from: ',
+          String(c.alarm),
+          ALARMS.map(a => ({ value: String(a), label: `${a}%` })),
+          v => edit(o => ({ ...o, alarm: (ALARMS.find(a => String(a) === v) ?? 75) as Alarm })),
+        ),
+        line('levels', `Yellow from ${c.alarm}%, red from ${redLevel(c.alarm)}%.`, GREY),
+        preview,
+      ])
+    } else {
+      middle = stack('body', [
+        c.features.handoff &&
+          choose(
+            'handoff-dir',
+            'Folder: ',
+            c.handoffDir,
+            [
+              { value: 'home', label: '~/.claude/handoffs (outside your projects)' },
+              { value: 'project', label: '.claude/handoffs in the project' },
+            ],
+            v => edit(o => ({ ...o, handoffDir: v === 'project' ? 'project' : 'home' })),
+          ),
+        c.features.handoff &&
+          c.handoffDir === 'project' &&
+          line('gitignore', 'Add .claude/handoffs/ to .gitignore so notes are not committed.', 'warning'),
+      ])
     }
+
+    // The title stays on the top row, a blank under it, and Back, Next and
+    // the hints on the bottom two. Between them, when the step is taller than
+    // the pane gives, a window Pulse scrolls itself: it follows the focus,
+    // and the wheel and page keys move it. A pane too short even for that
+    // scrolls whole. Drawn whole, the step also has a blank above Back.
+    const room = e.props.scroll.bodyRows - 4
+    const isClipped = middle.rows + 1 > room && room >= WINDOW_MIN
+    setupWindow = isClipped ? { at: middle.at, rows: middle.rows, window: room, first } : null
+    const offset = isClipped ? Math.min(Math.max(0, await read($, setupOffset)), middle.rows - room) : 0
 
     const isLast = i === list.length - 1
     const keys = [
@@ -670,22 +860,55 @@ export const register: Register = on => {
       'Esc closes',
     ]
     return (
-      <Box flexDirection="column" width={Math.max(20, e.props.bodyColumns)}>
-        <Box>
-          <Text color="claude">Pulse setup</Text>
-          <Text color={GREY} dimColor>{` · step ${i + 1}/${list.length}`}</Text>
+      <Box flexDirection="column" width={width}>
+        {/* The question on the left, where the eye starts; the wizard's name on the right. */}
+        <Box key="title" justifyContent="space-between">
+          <Box key="ask" flexShrink={1}>
+            <Text wrap="truncate-end">{ask}</Text>
+          </Box>
+          <Box key="step" flexShrink={0} marginLeft={2}>
+            <Text color="claude">Pulse setup</Text>
+            <Text color={GREY} dimColor>{` · step ${i + 1}/${list.length}`}</Text>
+          </Box>
         </Box>
-        <Box marginTop={1}>{body}</Box>
-        {/* Stacked, Back above Next/Finish: Down reaches both, as Left would leave the pane. */}
-        <Box key="nav" flexDirection="column" alignItems="flex-start" marginTop={1}>
+        {isClipped ? (
+          <Box key="window" flexDirection="column" height={room} overflow="hidden" flexShrink={0} marginTop={1}>
+            <Box key="window-rows" flexDirection="column" flexShrink={0} marginTop={-offset}>
+              {middle.el}
+            </Box>
+          </Box>
+        ) : (
+          <Box key="window" marginY={1}>
+            {middle.el}
+          </Box>
+        )}
+        {/* One row, Back then Next/Finish: Down reaches both in that order. */}
+        <Box key="nav">
           {i > 0 && <Button key="back" label="Back" hotkey="b" variant="secondary" onPress={() => go(i - 1)} />}
+          {i > 0 && <Text> </Text>}
           {isLast ? (
-            <Button key="finish" label="Finish" hotkey="f" variant="primary" autoFocus onPress={() => finish()} />
+            <Button
+              key="finish"
+              label="Finish"
+              hotkey="f"
+              variant="primary"
+              autoFocus={first === 'finish' ? true : undefined}
+              onPress={() => finish()}
+            />
           ) : (
-            <Button key={nextKeyOf(i)} label="Next" hotkey="n" variant="primary" autoFocus onPress={() => go(i + 1)} />
+            <Button
+              key={nextKeyOf(list, i)}
+              label="Next"
+              hotkey="n"
+              variant="primary"
+              autoFocus={first === nextKeyOf(list, i) ? true : undefined}
+              onPress={() => go(i + 1)}
+            />
           )}
         </Box>
-        <Text color={GREY} dimColor>{keys.filter(Boolean).join(' · ')}</Text>
+        <Text color={GREY} dimColor wrap="truncate-end">
+          {keys.filter(Boolean).join(' · ')}
+        </Text>
       </Box>
     )
   })
@@ -700,7 +923,9 @@ export const register: Register = on => {
     const rows = [
       await setupRow($, e, cfg),
       await handoffRow($, e, cfg),
-      cfg.features.bar ? await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns }) : null,
+      cfg.features.bar
+        ? (await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns })).el
+        : null,
     ].filter(row => row !== null)
     if (rows.length === 0) return below
 

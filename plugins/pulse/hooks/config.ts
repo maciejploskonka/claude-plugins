@@ -1,4 +1,4 @@
-import type { Alarm, Config } from '../types'
+import type { Alarm, Config, Draft } from '../types'
 
 export const STORE_KEY = 'config'
 export const ALARMS: readonly Alarm[] = [50, 60, 75, 90]
@@ -48,3 +48,40 @@ export const steps = (c: Config): Step[] => {
   if (c.features.handoff) list.push('details')
   return list
 }
+
+// Whether a handoff needs its slash command: handoff is on, but the bar
+// shows no Handoff button to press (the bar is off, or the button is).
+export const needsHandoffCommand = (c: Config) => c.features.handoff && !(c.features.bar && c.bar.buttons.handoff)
+
+// Next's key names its step (Finish on the last), so a focus move waits for
+// the new step's button rather than landing on the old one before the redraw.
+export const nextKeyOf = (list: Step[], n: number) => (n >= list.length - 1 ? 'finish' : `next-${list[n]}`)
+
+// The wizard's controls by key, top to bottom: the order Up and Down walk.
+export const focusOrder = (d: Draft): string[] => {
+  if (d.result) return d.result.ok ? ['done-close'] : ['done-close', 'done-retry']
+  const c = d.config
+  const list = steps(c)
+  const i = Math.min(d.step, list.length - 1)
+  const step = list[i] ?? 'features'
+  const body =
+    step === 'features'
+      ? ['f-bar', 'f-handoff']
+      : step === 'bar'
+        ? [
+            'meter-bar',
+            'meter-number',
+            ...['tokens', 'cache', 'limits', 'resets', 'cost', 'summarize'].map(k => `b-${k}`),
+            ...(c.features.handoff ? ['b-handoff'] : []),
+          ]
+        : step === 'alarm'
+          ? ALARMS.map(a => `alarm-${a}`)
+          : c.features.handoff
+            ? ['handoff-dir-home', 'handoff-dir-project']
+            : []
+  return [...body, ...(i > 0 ? ['back'] : []), nextKeyOf(list, i)]
+}
+
+// Where a screen starts the focus: its top control, so the step number above
+// it shows. Never Back (Enter would undo the step), so Next on a bare step.
+export const startKey = (d: Draft) => focusOrder(d).find(k => k !== 'back') ?? 'finish'

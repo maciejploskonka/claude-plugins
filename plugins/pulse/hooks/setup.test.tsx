@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 import type { Mounted } from 'claude-code/testing'
 
-import { defaults } from './config'
+import { defaults, focusOrder } from './config'
 import { BAND, PANE_PROPS, START, SURFACES, engine, runCommand } from './test-engine'
 
 const PANE = { component: 'Pane', requestId: 'pulse-setup', props: PANE_PROPS } as const
@@ -32,8 +32,10 @@ describe('setup wizard', () => {
       await next(pane)
       await pane.press({ key: 'b-cost' })
       await pane.press({ key: 'meter-number' })
-      expect(await pane.find({ text: /\$1\.23/ })).toBeUndefined()
-      expect((await pane.find({ key: 'preview' }))?.text).not.toMatch(/█/)
+      // The docked pane previews the answers: no cost, no meter bar.
+      const shown = (await pane.find({ key: 'preview' }))?.text ?? ''
+      expect(shown).toMatch(/^Preview:ctx/)
+      expect(shown).not.toMatch(/█|\$1\.23/)
 
       await pane.press({ key: 'back' })
       expect(await pane.find({ text: /step 1\/3/ })).toBeDefined()
@@ -42,10 +44,10 @@ describe('setup wizard', () => {
       await pane.press({ key: 'alarm-50' })
       expect(await pane.find({ text: /Yellow from 50%, red from 65%\./ })).toBeDefined()
       await pane.press({ key: 'finish' })
-      // A result screen, not an instant close: it says it worked and what is on.
+      // A result screen, not an instant close: it says it worked, no list of what is on.
       expect(f.closed).not.toContain('pulse-setup')
       expect(await pane.find({ text: /✓ Pulse is set up\. You're ready to roll\./ })).toBeDefined()
-      expect(await pane.find({ text: /On: usage bar \(warns at 50%\)/ })).toBeDefined()
+      expect(await pane.find({ text: /^On: / })).toBeUndefined()
       expect(await pane.find({ text: /Change it any time with \/pulse-setup\./ })).toBeDefined()
       expect((await pane.find({ type: 'Button', key: 'done-close' }))?.props?.hotkey).toBe('c')
       await pane.press({ key: 'done-close' })
@@ -150,14 +152,14 @@ describe('setup wizard', () => {
     expect(f.openArgs).toEqual([{ id: 'pulse-setup', closeOnEscape: true, focus: true }])
   })
 
-  test('Next, Back and Finish have letter keys, toggles none; the focus starts on Next', async ($, on) => {
+  test('Next, Back and Finish have letter keys, toggles none; the focus starts at the top', async ($, on) => {
     engine(on)
     await $.session.start(START)
     const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
     const button = (key: string) => pane.find({ type: 'Button', key })
     const hotkey = async (key: string) => (await button(key))?.props?.hotkey
-    expect((await button('next-features'))?.props?.autoFocus).toBe(true)
-    expect((await button('f-bar'))?.props?.autoFocus).toBeUndefined()
+    expect((await button('f-bar'))?.props?.autoFocus).toBe(true)
+    expect((await button('next-features'))?.props?.autoFocus).toBeUndefined()
     // Digits are the engine's (band surveys) and leave the pane: no digit keys.
     expect([await hotkey('f-bar'), await hotkey('f-handoff')]).toEqual([undefined, undefined])
     expect(await hotkey('next-features')).toBe('n')
@@ -206,10 +208,8 @@ describe('setup wizard', () => {
     expect((await pane.find({ type: 'Button', key: 'meter-number' }))?.props?.label).toMatch(/^\( \) Number only/)
     await next(pane)
     expect(await pane.find({ type: 'Select' })).toBeUndefined()
-    // Back above Next, stacked: Down reaches both without Left or Right.
-    const nav = await pane.find({ key: 'nav' })
-    expect(nav?.props?.flexDirection).toBe('column')
-    expect(nav?.text).toMatch(/Back.*Next/)
+    // Back then Next, in that order: Down reaches both without Left or Right.
+    expect((await pane.find({ key: 'nav' }))?.text).toMatch(/Back.*Next/)
     await pane.press({ key: 'alarm-90' })
     expect((await pane.find({ type: 'Button', key: 'alarm-90' }))?.props?.label).toMatch(/^\(•\) 90%/)
     expect(await pane.find({ text: /Yellow from 90%, red from 95%\./ })).toBeDefined()
@@ -224,6 +224,117 @@ describe('setup wizard', () => {
     expect(f.focusMoves).toEqual([])
     await $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element: 'next', origin: person } as never)
     expect(f.focusMoves).toEqual(['next'])
+  })
+
+  test('the arrows walk the controls in the order they are drawn, on every step', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    const drawn = async () => (await pane.findAll({ type: 'Button' })).map(b => b.key)
+    for (let step = 0; step < 4; step += 1) {
+      expect(await drawn()).toEqual(focusOrder({ config: defaults(), step }))
+      if (step < 3) await next(pane)
+    }
+    await pane.press({ key: 'finish' })
+    expect(await drawn()).toEqual(focusOrder({ config: defaults(), step: 3, result: { ok: true } }))
+    await pane.unmount()
+  })
+
+  test('in a short pane the title, Back, Next and hints stay; the middle scrolls under the focus', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const props = { ...PANE_PROPS, placement: 'inline', scroll: { offset: 0, bodyRows: 8 } }
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE, props } as never)) as Wizard
+    await next(pane)
+    const person = { kind: 'person' } as const
+    const at = (element: string) =>
+      $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element, origin: person } as never)
+    const shift = async () => (await pane.find({ key: 'window-rows' }))?.props?.marginTop
+    // 8 rows: title, a blank, a 4-row window, Back and Next, hints.
+    expect((await pane.find({ key: 'window' }))?.props?.height).toBe(4)
+    expect((await pane.find({ key: 'window' }))?.props?.marginTop).toBe(1)
+    expect((await pane.find({ key: 'nav' }))?.text).toMatch(/Back.*Next/)
+    expect(await pane.find({ text: /step 2\/4/ })).toBeDefined()
+    expect(await shift()).toBe(-0)
+
+    // The step's middle is 5 rows: the meter's label, then the items.
+    // The window follows the focus down by as little as shows it...
+    await at('b-handoff')
+    expect(await shift()).toBe(-1)
+    // ...stays while the focused item shows...
+    await at('meter-number')
+    expect(await shift()).toBe(-1)
+    // ...and the top item brings the meter's label back too.
+    await at('meter-bar')
+    expect(await shift()).toBe(-0)
+    // Back and Next take it to the end.
+    await at('next-bar')
+    expect(await shift()).toBe(-1)
+
+    // The wheel moves the window, within its ends; the frame never moves.
+    const wheel = (by: number) =>
+      $.ui.scroll({
+        component: 'Pane',
+        requestId: 'pulse-setup',
+        offset: 0,
+        by,
+        bodyRows: 8,
+        contentRows: 8,
+        origin: person,
+        pointer: { column: 3, row: 2 },
+      } as never)
+    await wheel(5)
+    expect(await shift()).toBe(-1)
+    await wheel(-1)
+    expect(await shift()).toBe(-0)
+    expect(f.scrolls).toEqual([])
+    await pane.unmount()
+  })
+
+  // The arrow's focus move is $.ui.focus, which the test kit cannot resolve:
+  // checked by hand. Here: which arrows still scroll the window.
+  test('in a pane too short for the wizard, arrows skip the scroll until past the ends', async ($, on) => {
+    const f = engine(on)
+    await $.session.start(START)
+    const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
+    await next(pane)
+    const person = { kind: 'person' } as const
+    const at = (element: string) =>
+      $.ui.focus({ component: 'Pane', requestId: 'pulse-setup', plugin: 'pulse', element, origin: person } as never)
+    const scroll = (by: number, pointer?: { column: number; row: number }) =>
+      $.ui.scroll({
+        component: 'Pane',
+        requestId: 'pulse-setup',
+        offset: 5 + by,
+        by,
+        bodyRows: 10,
+        contentRows: 20,
+        origin: person,
+        pointer,
+      } as never)
+
+    // A new step starts on its top control: Up from there scrolls.
+    await scroll(-1)
+    expect(f.scrolls).toEqual([-1])
+    f.scrolls.length = 0
+
+    await at('b-cache')
+    await scroll(1)
+    await scroll(-1)
+    expect(f.scrolls).toEqual([])
+    // Above the first control and below the last, the arrow scrolls: the
+    // title and the key hints stay reachable.
+    await at('meter-bar')
+    await scroll(-1)
+    await at('next-bar')
+    await scroll(1)
+    expect(f.scrolls).toEqual([-1, 1])
+    // The wheel and the page keys always scroll.
+    await at('b-cache')
+    await scroll(1, { column: 3, row: 2 })
+    await scroll(10)
+    expect(f.scrolls).toEqual([-1, 1, 1, 10])
+    await pane.unmount()
   })
 
   test('when saving fails, Finish says so and offers to try again', async ($, on) => {
@@ -244,20 +355,39 @@ describe('setup wizard', () => {
 
   // Moving the ring to Next on each step is $.ui.focus, which the test kit
   // cannot resolve ("no implementation for ui.focus"): checked by hand.
-  test('Next and Finish are where the focus starts on their step', async ($, on) => {
+  test('each step starts the focus on its top control, so its number shows', async ($, on) => {
     engine(on)
     await $.session.start(START)
     const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
-    for (let n = 0; n < 3; n += 1) {
-      expect((await pane.find({ type: 'Button', key: await nextKey(pane) }))?.props?.autoFocus).toBe(true)
-      await next(pane)
+    const focused = async () =>
+      (await pane.findAll({ type: 'Button' })).filter(b => b.props?.autoFocus).map(b => b.key)
+    const starts: (string | undefined)[][] = []
+    for (let n = 0; n < 4; n += 1) {
+      starts.push(await focused())
+      if (n < 3) await next(pane)
     }
-    expect((await pane.find({ type: 'Button', key: 'finish' }))?.props?.autoFocus).toBe(true)
-    expect((await pane.find({ type: 'Button', key: 'back' }))?.props?.autoFocus).toBeUndefined()
+    expect(starts).toEqual([['f-bar'], ['meter-bar'], ['alarm-50'], ['handoff-dir-home']])
     await pane.unmount()
   })
 
-  test('hints and the step counter use the bar\'s grey', async ($, on) => {
+  test('the bar step uses two columns where they fit, one where not', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    for (const [bodyColumns, two] of [[80, true], [50, false]] as const) {
+      const props = { ...PANE_PROPS, bodyColumns }
+      const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE, props } as never)) as Wizard
+      await next(pane)
+      expect((await pane.find({ key: 'bar-columns' })) !== undefined).toBe(two)
+      if (two) {
+        expect((await pane.find({ key: 'bar-left' }))?.text).toMatch(/Context meter.*Token count.*Prompt cache/s)
+        expect((await pane.find({ key: 'bar-right' }))?.text).toMatch(/Rate limits.*Handoff button/s)
+      }
+      await pane.press({ key: 'back' })
+      await pane.unmount()
+    }
+  })
+
+  test('hints, the step counter and the preview label use the bar\'s grey', async ($, on) => {
     engine(on)
     await $.session.start(START)
     const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE } as never)) as Wizard
@@ -300,6 +430,24 @@ describe('setup wizard', () => {
     expect(preview).toMatch(/5h \d+% resets \d/)
     expect(preview).toMatch(/7d \d+% resets \d/)
     expect(preview).toMatch(/\$/)
+    // The buttons as text: a preview presses nothing.
+    expect(await pane.find({ type: 'Button', key: 'summarize' })).toBeUndefined()
     await pane.unmount()
+  })
+
+  test('the preview shows in the tall docked pane, not the short one above the prompt', async ($, on) => {
+    engine(on)
+    await $.session.start(START)
+    for (const [placement, isShown] of [['dock', true], ['inline', false]] as const) {
+      const props = { ...PANE_PROPS, placement }
+      const pane = (await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...PANE, props } as never)) as Wizard
+      await next(pane)
+      expect((await pane.find({ key: 'preview' })) !== undefined).toBe(isShown)
+      await next(pane)
+      expect((await pane.find({ key: 'preview' })) !== undefined).toBe(isShown)
+      await pane.press({ key: 'back' })
+      await pane.press({ key: 'back' })
+      await pane.unmount()
+    }
   })
 })
