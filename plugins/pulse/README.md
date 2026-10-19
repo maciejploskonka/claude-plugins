@@ -132,10 +132,7 @@ their own: their status as the last part of the stats row, with its buttons
 inside it (or after Pulse's own, if the add-on asks). For example, with
 [Pulse-caveman](../pulse-caveman/README.md):
 
-```
-ctx ██░░ 6% 60k/1M · cache 99% · … · $0.29 · ultracave (35m) [ Off ]
-[ Summarize ] [ Handoff ]
-```
+![The Pulse bar with Pulse-caveman: ultracave on for 0 minutes, and an Off button](../../docs/images/pulse-caveman/bar-active.png)
 
 Pulse knows one add-on by name: `pulse-caveman`. With the usage bar turned
 off, the add-on draws its own rows again.
