@@ -22,17 +22,29 @@ describe('handoff', () => {
       await turnEnds($)
       expect(await ui.find({ text: /Handoff saved/ })).toBeDefined()
 
+      // Clear & continue clears, then hands the new conversation the note
+      // itself: no event tells a plugin about the new one (Claude Code 2.1.301).
       await ui.press({ key: 'handoff-clear' })
       await f.clock.settle()
       expect(f.commands).toContain('clear')
-
-      await $.classic.SessionStart({ source: 'clear' })
-      await f.clock.settle()
       expect(f.submitted.at(-1)).toContain(`Read \`${file}\``)
       expect(await ui.find({ key: 'handoff-clear' })).toBeUndefined()
       await ui.unmount()
     })
   }
+
+  test('the saved note shows as a link to it', async ($, on) => {
+    const f = engine(on, ready())
+    await $.session.start(START)
+    const ui = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    await runCommand($, 'pulse-handoff')
+    await f.clock.settle()
+    const file = /`([^`]+)`/.exec(f.submitted.at(-1) ?? '')?.[1] ?? ''
+    f.files.add(file)
+    await turnEnds($)
+    expect(await ui.find({ text: file.split('/').pop() ?? '' })).toBeDefined()
+    await ui.unmount()
+  })
 
   test('the bar’s Handoff button starts the same flow', async ($, on) => {
     const f = engine(on, ready())
@@ -67,7 +79,7 @@ describe('handoff', () => {
     await turnEnds($)
     expect(f.toasts).toEqual(['Context 61% full — time for a handoff (press Handoff below).'])
 
-    await $.classic.SessionStart({ source: 'clear' })
+    await runCommand($, 'clear')
     await turnEnds($)
     expect(f.toasts.length).toBe(2)
   })
@@ -117,10 +129,29 @@ describe('handoff', () => {
     await ui.press({ key: 'handoff-clear' })
     await ui.unmount()
 
-    const before = f.submitted.length
-    await $.classic.SessionStart({ source: 'clear' })
-    expect(f.submitted.length).toBe(before)
+    // The press itself sends nothing: the prompt goes on a timer, after it.
+    expect(f.submitted.at(-1)).not.toContain(`Read \`${file}\``)
     await f.clock.settle()
     expect(f.submitted.at(-1)).toContain(`Read \`${file}\``)
+  })
+
+  test('drawn with nothing loaded (a new conversation after /clear), Pulse loads its settings', async ($, on) => {
+    const f = engine(on, ready())
+    // No session.start: Claude Code 2.1.301 sends none after /clear.
+    const ui = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
+    await f.clock.settle()
+    expect(await ui.find({ text: /not set up/ })).toBeUndefined()
+    expect(await ui.find({ text: /42% 84k\/200k/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a /clear the person types starts afresh: the reminder can come again', async ($, on) => {
+    const f = engine(on, ready({ alarm: 60 }))
+    await $.session.start(START)
+    f.ctx.percent = 61
+    await turnEnds($)
+    await runCommand($, 'clear')
+    await turnEnds($)
+    expect(f.toasts.length).toBe(2)
   })
 })

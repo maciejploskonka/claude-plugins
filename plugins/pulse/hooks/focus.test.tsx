@@ -14,6 +14,7 @@ describe('prompt text as the focus', () => {
     await $.session.start(START)
     const ui = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
     await ui.press({ key: 'summarize' })
+    await f.clock.settle()
     expect(f.compactInstructions).toEqual([undefined])
     expect(f.toasts).toEqual([])
     await ui.unmount()
@@ -25,6 +26,7 @@ describe('prompt text as the focus', () => {
     f.draft = '  keep the auth refactor, drop the CSS detour \n'
     const ui = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
     await ui.press({ key: 'summarize' })
+    await f.clock.settle()
     expect(f.compactInstructions).toEqual(['keep the auth refactor, drop the CSS detour'])
     expect(f.draft).toBe('')
     expect(f.toasts).toEqual([FOCUS])
@@ -38,6 +40,7 @@ describe('prompt text as the focus', () => {
     f.isBusy = true
     const ui = await $.ui.mount({ plugin: 'pulse', surface: 'terminal', ...BAND })
     await ui.press({ key: 'summarize' })
+    await f.clock.settle()
     expect(f.compacts).toBe(0)
     expect(f.draft).toBe('keep the auth refactor')
     expect(f.toasts).toEqual(['Cannot summarize while Claude is working.'])
