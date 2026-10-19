@@ -86,8 +86,8 @@ from that note.
    the exact next steps, and anything learned the hard way. To hand off only
    part of the session, type that part in the prompt box first (see
    [Point a button at one part of the session](#point-a-button-at-one-part-of-the-session)).
-2. When the note is saved, the row offers `[ Clear & continue ]` and
-   `[ Keep going ]`.
+2. When the note is saved, the row shows the note's name as a link (click it
+   to open the note) and offers `[ Clear & continue ]` and `[ Keep going ]`.
 3. `Clear & continue` clears the conversation and asks the new one to read the
    note. It starts by saying in two lines where you are.
 
@@ -101,8 +101,8 @@ Notes are plain Markdown files, so you can read, edit or share them:
 ## Setup
 
 On first launch Pulse opens a short wizard in a pane next to the session. It
-needs only the arrow keys and Enter: every step starts on `Next`, so pressing
-Enter takes the defaults, and Up reaches the answers.
+needs only the arrow keys and Enter: each step starts on its first answer,
+Enter picks, and Down leads to `Next`. The defaults are already picked.
 
 ![Setup, step 1: which parts of Pulse you want](../../docs/images/pulse/setup-features.png)
 
@@ -124,6 +124,21 @@ wizard waits, and a row above the prompt offers `[ Set up ]` and
 
 Wizard keys: `↑` `↓` move, `Enter` picks, `n` next, `b` back, `f` finish,
 `Esc` closes without saving.
+
+## Add-ons
+
+Other Pulse-family plugins can show inside the bar instead of in rows of
+their own: their status as the last part of the stats row, with its buttons
+inside it (or after Pulse's own, if the add-on asks). For example, with
+[Pulse-caveman](../pulse-caveman/README.md):
+
+```
+ctx ██░░ 6% 60k/1M · cache 99% · … · $0.29 · ultracave (35m) [ Off ]
+[ Summarize ] [ Handoff ]
+```
+
+Pulse knows one add-on by name: `pulse-caveman`. With the usage bar turned
+off, the add-on draws its own rows again.
 
 ## Commands
 
@@ -151,6 +166,11 @@ restart Claude Code if the new version does not show.
 
 ## Changelog
 
+- **0.3.0**: Add-ons: Pulse-family plugins (first Pulse-caveman) show their status and buttons inside the bar.
+  Nothing changes when none is installed.
+  Fixes for Claude Code 2.1.301: after `/clear` the bar keeps your settings (no "Pulse is not set up yet"),
+  and `Clear & continue` hands the note over again. A long `Summarize` no longer times out.
+  A saved handoff shows the note's name as a link that opens it.
 - **0.2.0**: Text typed in the prompt box, not sent, becomes the focus of the next `Summarize` or `Handoff`:
   what the summary keeps, or what the note is about. Nothing typed: the buttons work as before.
   `/pulse-handoff <focus>` takes its focus after the command.

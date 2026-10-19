@@ -1,7 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { Alarm, CacheTotals, Config, Draft, SetupResult, UsageSnapshot } from '../types'
+import type { AddonButton, AddonPart, Alarm, CacheTotals, Config, Draft, PulseAddon, SetupResult, UsageSnapshot } from '../types'
+import { ADDON_CONTRACT, readAddon, splitCommand } from './addons'
 import { GREY, TRACK, cacheColor, ctxColor, limitColor, redLevel } from './colors'
 import {
   ALARMS,
@@ -56,11 +57,119 @@ const loadConfig = async ($: EngineInterface): Promise<Config> => {
   return cfg
 }
 
+// What a conversation's Pulse needs before it draws: the saved settings, the
+// handoff command where it is wanted, the add-on contract, the numbers.
+const isLoaded = atom({ plugin: 'pulse', key: 'isLoaded' } as const, false)
+
+const loadSession = async ($: EngineInterface) => {
+  const cfg = await loadConfig($)
+  await offerHandoffCommand($, cfg)
+  await publishAddons($, cfg)
+  await refreshUsage($)
+  await update($, isLoaded, () => true)
+  return cfg
+}
+
+// Drawn with nothing loaded: a conversation that started without telling
+// Pulse (a /clear another plugin ran, or one Claude Code started itself).
+// A draw cannot write, so the load runs on a timer, once per conversation.
+let loadingFor: string | null = null
+const loadIfEmpty = async ($: EngineInterface) => {
+  if (await read($, isLoaded)) return
+  const id = await $.session.id().catch(() => '')
+  if (id === loadingFor) return
+  loadingFor = id
+  $.clock.after(0, () => void loadSession($).catch(() => (loadingFor = null)))
+}
+
 // Stores `cfg` and applies it at once: the state write redraws every reader.
 const saveConfig = async ($: EngineInterface, cfg: Config) => {
   await $.store.set(STORE_KEY, cfg)
   await update($, config, () => cfg)
   await offerHandoffCommand($, cfg)
+  await publishAddons($, cfg)
+}
+
+// ── Add-ons ─────────────────────────────────────────────────────────────
+// Pulse-family plugins hand Pulse what to draw (PulseAddon, under their key
+// `addon`); Pulse draws it in its bar and says so in `pulse.addons`. With
+// the bar off it says nothing, and each add-on draws its own rows.
+
+const addons = atom({ plugin: 'pulse', key: 'addons' } as const, null)
+
+const publishAddons = async ($: EngineInterface, cfg: Config) => {
+  await update($, addons, () => (cfg.features.bar ? { contract: ADDON_CONTRACT } : null))
+}
+
+// The add-ons Pulse knows, each read by its literal name, as $.state.get
+// requires; one not installed has never written and reads as nothing.
+type Addon = { name: string; addon: PulseAddon }
+const readAddons = async ($: EngineInterface): Promise<Addon[]> => {
+  const found: Addon[] = []
+  const take = (name: string, raw: unknown) => {
+    const addon = readAddon(raw)
+    if (addon) found.push({ name, addon })
+  }
+  try {
+    take('pulse-caveman', (await $.state.get({ plugin: 'pulse-caveman', key: 'addon' })).value)
+  } catch {
+    // An unreadable add-on draws nothing; the bar stands.
+  }
+  return found
+}
+
+// A press on an add-on's button runs its command; Pulse never changes the
+// add-on's state itself.
+const runAddon = async ($: EngineInterface, command: string) => {
+  try {
+    await $.command.run(splitCommand(command))
+  } catch {
+    $.ui.toast(`Could not run /${splitCommand(command).command}.`)
+  }
+}
+
+// An add-on's buttons, as Pulse's own are drawn.
+const addonButtons = (
+  $: EngineInterface,
+  { Box, Button, Text }: ReturnType<EngineInterface['ui']['resolve']>,
+  name: string,
+  buttons: AddonButton[],
+) =>
+  buttons.map((b, n) => (
+    <Box key={`addon-${name}-${b.key}-slot`}>
+      {n > 0 && <Text> </Text>}
+      <Button
+        key={`addon-${name}-${b.key}`}
+        label={b.label}
+        variant={b.primary ? 'primary' : 'secondary'}
+        onPress={() => runAddon($, b.command)}
+      />
+    </Box>
+  ))
+
+// An add-on's own row above the bar (a question it asks), as Pulse's setup
+// row stands there; null when no add-on has one.
+const addonPromptRows = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
+  if (!cfg.features.bar) return null
+  const asking = (await readAddons($)).filter(a => a.addon.prompt !== null)
+  if (asking.length === 0) return null
+  const ui = $.ui.resolve(e)
+  const { Box, Text } = ui
+  return (
+    <Box key="addon-prompts" flexDirection="column">
+      {asking.map(({ name, addon }) => (
+        <Box key={`addon-${name}-prompt`}>
+          {addon.prompt!.parts.map((p, n) => (
+            <Text key={String(n)} color={p.dim ? GREY : p.color} dimColor={p.dim ? true : undefined}>
+              {p.text}
+            </Text>
+          ))}
+          <Text> </Text>
+          {addonButtons($, ui, name, addon.prompt!.buttons)}
+        </Box>
+      ))}
+    </Box>
+  )
 }
 
 // /pulse-handoff only where no Handoff button is there to press. The engine
@@ -130,6 +239,12 @@ const summarize = async ($: EngineInterface) => {
   }
 }
 
+// A compaction can take longer than a press may run (10 s): the press only
+// starts it, on a timer, and returns.
+const summarizeSoon = ($: EngineInterface) => {
+  $.clock.after(0, () => void summarize($))
+}
+
 // One row of the bar, from `cfg` and the numbers in state. `isPreview` draws
 // the buttons as plain text, so the wizard's preview presses nothing.
 const barRow = async (
@@ -155,7 +270,8 @@ const barRow = async (
   // The bar is pieces, each kept whole. Pulse packs them into rows itself
   // (the engine's flex wrap left a spare empty row): a piece that does not
   // fit starts the next row and drops its leading separator there.
-  type Piece = { key: string; text: string; sep: string; draw: (sep: string) => RenderChildren }
+  // `alt`: a shorter form, drawn when the piece does not fit the rest of its row.
+  type Piece = { key: string; text: string; sep: string; draw: (sep: string) => RenderChildren; alt?: Piece }
   const textPiece = (key: string, parts: [string, string][]): Piece => ({
     key,
     text: parts.map(([, t]) => t).join(''),
@@ -202,12 +318,63 @@ const barRow = async (
   }
   if (cfg.bar.cost && u && u.usd !== null) pieces.push(textPiece('cost', [[GREY, `$${u.usd.toFixed(2)}`]]))
 
+  // Add-ons: each one's stat last on the stats row; its buttons inside that
+  // stat where it asks (`caveman ultra [ Off ] · on 3m`), else after Pulse's
+  // own. Not in the setup preview, which shows Pulse's own parts.
+  const plugged = opts.isPreview ? [] : await readAddons($)
+  const isInlineShown = !busy && !opts.isWorking
+  for (const { name, addon } of plugged) {
+    if (!addon.stat) continue
+    if (addon.buttonsAt === null || addon.buttons.length === 0) {
+      pieces.push(textPiece(`addon-${name}`, addon.stat.map(p => [p.dim ? GREY : p.color, p.text])))
+      continue
+    }
+    const at = addon.buttonsAt
+    const drawPart = (p: AddonPart, n: number) => (
+      <Text key={String(n)} color={p.dim ? GREY : p.color} dimColor={p.dim ? true : undefined}>
+        {p.text}
+      </Text>
+    )
+    // Hidden while Claude works, as the button row is.
+    const shown = isInlineShown ? addon.buttons : []
+    const piece = (parts: AddonPart[], key: string): Piece => {
+      const before = parts.slice(0, at)
+      const after = parts.slice(at)
+      return {
+        key,
+        text: [...before, ...after].map(p => p.text).join('') + shown.map(b => ` [ ${b.label} ]`).join(''),
+        sep: ' · ',
+        draw: sep => (
+          <Box key={`bar-${key}`} flexShrink={0}>
+            {sep !== '' && <Text color={GREY} dimColor>{sep}</Text>}
+            {before.map(drawPart)}
+            {shown.map(b => (
+              <Box key={`addon-${name}-${b.key}-slot`}>
+                <Text> </Text>
+                <Button
+                  key={`addon-${name}-${b.key}`}
+                  label={b.label}
+                  variant={b.primary ? 'primary' : 'secondary'}
+                  onPress={() => runAddon($, b.command)}
+                />
+              </Box>
+            ))}
+            {after.map((p, n) => drawPart(p, before.length + n))}
+          </Box>
+        ),
+      }
+    }
+    const full = piece(addon.stat, `addon-${name}`)
+    pieces.push(addon.short ? { ...full, alt: piece(addon.short, `addon-${name}-short`) } : full)
+  }
+  const addonGroups = plugged.filter(a => a.addon.buttons.length > 0 && (a.addon.buttonsAt === null || !a.addon.stat))
+
   // Actions: the buttons, side by side on a row of their own under the
   // stats. A button added later goes in this list and lands there too.
   const actions: { key: string; label: string; isPrimary: boolean; onPress: () => unknown }[] = []
-  if (showSummarize) actions.push({ key: 'summarize', label: 'Summarize', isPrimary: false, onPress: () => summarize($) })
+  if (showSummarize) actions.push({ key: 'summarize', label: 'Summarize', isPrimary: false, onPress: () => summarizeSoon($) })
   if (showHandoff) actions.push({ key: 'handoff', label: 'Handoff', isPrimary: isAlarm, onPress: () => handoffPressed($, cfg) })
-  const isActing = actions.length > 0 && (opts.isPreview || busy || !opts.isWorking)
+  const isActing = actions.length + addonGroups.length > 0 && (opts.isPreview || busy || !opts.isWorking)
 
   const statColumns = Math.max(10, opts.columns)
   const rows: { piece: Piece; sep: string }[][] = [[]]
@@ -215,7 +382,12 @@ const barRow = async (
   for (const piece of pieces) {
     const row = rows[rows.length - 1]!
     const wide = piece.sep.length + piece.text.length
-    if (row.length > 0 && used + wide > statColumns) {
+    const alt = piece.alt
+    if (row.length > 0 && used + wide > statColumns && alt && used + alt.sep.length + alt.text.length <= statColumns) {
+      // Too long for the rest of the row, but its short form fits there.
+      row.push({ piece: alt, sep: alt.sep })
+      used += alt.sep.length + alt.text.length
+    } else if (row.length > 0 && used + wide > statColumns) {
       rows.push([{ piece, sep: '' }])
       used = piece.text.length
     } else {
@@ -239,12 +411,23 @@ const barRow = async (
           ) : opts.isPreview ? (
             <Text color={GREY} dimColor>{actions.map(a => `[ ${a.label} ]`).join(' ')}</Text>
           ) : (
-            actions.map((a, n) => (
-              <Box key={`${a.key}-slot`}>
-                {n > 0 && <Text> </Text>}
-                <Button key={a.key} label={a.label} variant={a.isPrimary ? 'primary' : 'secondary'} onPress={a.onPress} />
-              </Box>
-            ))
+            // One flat list: a fragment here would stack its children.
+            [
+              ...actions.map((a, n) => (
+                <Box key={`${a.key}-slot`}>
+                  {n > 0 && <Text> </Text>}
+                  <Button key={a.key} label={a.label} variant={a.isPrimary ? 'primary' : 'secondary'} onPress={a.onPress} />
+                </Box>
+              )),
+              // Each add-on after a 3-space gap, behind its grey `label:`.
+              ...addonGroups.map(({ name, addon }, n) => (
+                <Box key={`addon-${name}-buttons`}>
+                  {(n > 0 || actions.length > 0) && <Text>{'   '}</Text>}
+                  {addon.label !== '' && <Text color={GREY} dimColor>{`${addon.label}: `}</Text>}
+                  {addonButtons($, $.ui.resolve(e), name, addon.buttons)}
+                </Box>
+              )),
+            ]
           )}
         </Box>
       )}
@@ -278,14 +461,23 @@ const handoffPressed = async ($: EngineInterface, cfg: Config) => {
   if (focus !== '') await focusUsed($)
 }
 
+// /clear starts a new conversation with Pulse's memory of the old one gone,
+// and no event says so to a plugin (Claude Code 2.1.301). So the note's path
+// is read first, and the new conversation is set up and handed the note
+// right after the clear returns.
 const clearAndContinue = async ($: EngineInterface) => {
+  const file = await read($, handoffPath)
   await update($, handoffPhase, () => 'resuming' as const)
   try {
     await $.command.run({ command: 'clear' })
   } catch {
-    // The note is safe; the person clears by hand and the resume still fires.
-    $.ui.toast('Type /clear. The handoff note is read in the new conversation.')
+    await update($, handoffPhase, () => 'saved' as const)
+    $.ui.toast(`Could not clear. Type /clear, then ask Claude to read ${file ?? 'the handoff note'}.`)
+    return
   }
+  await newConversation($)
+  // On a timer, outside the press, as every turn Pulse starts.
+  if (file) $.clock.after(0, () => void $.prompt.submit({ text: RESUME_PROMPT(file), asUser: true }))
 }
 
 const handoffRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
@@ -293,7 +485,7 @@ const handoffRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
   if (!cfg.features.handoff || phase === 'idle') return null
 
   const file = await read($, handoffPath)
-  const { Box, Button, Text } = $.ui.resolve(e)
+  const { Box, Button, Link, Text } = $.ui.resolve(e)
   const dismiss = () => update($, handoffPhase, () => 'idle' as const)
 
   if (phase === 'writing') {
@@ -307,11 +499,22 @@ const handoffRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
   if (phase === 'saved') {
     return (
       <Box key="handoff">
-        <Text color="success">⚑ Handoff saved: </Text>
-        <Text color={GREY} dimColor wrap="truncate-middle">{`${file ?? ''} `}</Text>
-        <Button key="handoff-clear" label="Clear & continue" variant="primary" onPress={() => clearAndContinue($)} />
-        <Text> </Text>
-        <Button key="handoff-keep" label="Keep going" variant="secondary" onPress={dismiss} />
+        <Box flexShrink={0}>
+          <Text color="success">⚑ Handoff saved: </Text>
+        </Box>
+        {/* A terminal without links draws the name, then the whole URL: it is
+            cut in the middle there, so the label and buttons keep their row. */}
+        <Box flexShrink={1}>
+          <Text color={GREY} wrap="truncate-middle">
+            {file ? <Link key="handoff-file" href={encodeURI(`file://${file}`)} label={file.split('/').pop()} /> : ''}
+          </Text>
+        </Box>
+        <Box flexShrink={0}>
+          <Text> </Text>
+          <Button key="handoff-clear" label="Clear & continue" variant="primary" onPress={() => clearAndContinue($)} />
+          <Text> </Text>
+          <Button key="handoff-keep" label="Keep going" variant="secondary" onPress={dismiss} />
+        </Box>
       </Box>
     )
   }
@@ -348,14 +551,15 @@ const handoffOnTurnEnd = async ($: EngineInterface, cfg: Config) => {
   }
 }
 
-// The fresh conversation after /clear: hand it the note.
-const handoffOnClear = async ($: EngineInterface) => {
-  const file = await read($, handoffPath)
-  const wasResuming = (await read($, handoffPhase)) === 'resuming'
+// A new conversation (after /clear): nothing carried over from the old one.
+// On Claude Code 2.1.301 Pulse's memory is gone already; on older versions it
+// is reset here. Then the saved settings are loaded again.
+const newConversation = async ($: EngineInterface) => {
+  await update($, last, () => null)
   await update($, handoffPhase, () => 'idle' as const)
+  await update($, handoffPath, () => null)
   await update($, handoffReminded, () => false)
-  // On a timer, outside the /clear hook, as every turn Pulse starts.
-  if (wasResuming && file) $.clock.after(0, () => void $.prompt.submit({ text: RESUME_PROMPT(file), asUser: true }))
+  await loadSession($)
 }
 
 // ── Setup wizard ────────────────────────────────────────────────────────
@@ -459,15 +663,21 @@ const setupRow = async ($: EngineInterface, e: RenderIn, cfg: Config) => {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    const cfg = await loadConfig($)
+    const cfg = await loadSession($)
     await $.command.register({ name: 'pulse-setup', description: 'Choose what Pulse shows and how' })
     await $.command.register({ name: 'pulse-reset', description: 'Restore Pulse’s default settings' })
-    await offerHandoffCommand($, cfg)
-    await refreshUsage($)
     // Stops on reload, and session.start fires again then.
     $.clock.every(REFRESH_MS, () => void refreshUsage($))
     if (!cfg.setupDone && e.isInteractive) void openSetup($)
     return next(e)
+  })
+
+  // /clear typed by the person: a new conversation. (Clear & continue runs
+  // its own, which no hook of Pulse's sees, and sets up after it itself.)
+  on('command.run', { command: 'clear' }, async ($, e, next) => {
+    const done = await next(e)
+    await newConversation($).catch(() => {})
+    return done
   })
 
   // Every main-loop model request: what the cache served. It streams:
@@ -491,17 +701,6 @@ export const register: Register = on => {
     const cfg = await read($, config)
     if (cfg.features.bar) await refreshUsage($)
     if (cfg.features.handoff) await handoffOnTurnEnd($, cfg)
-    return done
-  })
-
-  on('classic.SessionStart', async ($, e, next) => {
-    const done = await next(e)
-    if (e.source === 'clear') {
-      // A new conversation: the last request's cache figure goes with it.
-      await update($, last, () => null)
-      await handoffOnClear($)
-    }
-    await refreshUsage($)
     return done
   })
 
@@ -945,10 +1144,12 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const below = await next(e)
     if (e.props.hasSurvey) return below
+    await loadIfEmpty($)
 
     const cfg = await read($, config)
     const rows = [
       await setupRow($, e, cfg),
+      await addonPromptRows($, e, cfg),
       await handoffRow($, e, cfg),
       cfg.features.bar
         ? (await barRow($, e, cfg, { isWorking: e.props.isWorking, isPreview: false, columns: e.props.bodyColumns })).el

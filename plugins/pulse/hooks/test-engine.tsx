@@ -40,6 +40,8 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
     files: new Set<string>(),
     submitted: [] as string[],
     commands: [] as string[],
+    /** Each command run, with its arguments: `pulse-caveman off`. */
+    commandLines: [] as string[],
     /** Slash commands Pulse registered, in order. */
     registered: [] as string[],
     toasts: [] as string[],
@@ -123,6 +125,7 @@ export const engine = (on: On, store: Record<string, unknown> = {}) => {
   })
   on('command.run', (_$, e) => {
     f.commands.push(e.command)
+    f.commandLines.push(`${e.command} ${e.args}`.trim())
     return { text: '' }
   })
   on('prompt.submit', (_$, e) => {
