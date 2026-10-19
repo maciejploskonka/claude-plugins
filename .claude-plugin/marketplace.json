@@ -8,6 +8,10 @@
     {
       "name": "pulse",
       "source": "./plugins/pulse"
+    },
+    {
+      "name": "pulse-caveman",
+      "source": "./plugins/pulse-caveman"
     }
   ]
 }

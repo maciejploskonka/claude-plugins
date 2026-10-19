@@ -1,0 +1,10 @@
+{
+  "name": "pulse-caveman",
+  "version": "0.1.0",
+  "description": "Turn caveman on with one press, and see whether it is on, in which mode, and for how long",
+  "author": {
+    "name": "Maciej Ploskonka"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}

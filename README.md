@@ -9,8 +9,10 @@ Plugins for [Claude Code](https://claude.com/claude-code) by Maciej Ploskonka.
 | Plugin | What it does |
 | --- | --- |
 | [**Pulse**](plugins/pulse) | A live bar above the prompt: context fill, prompt cache, rate limits with reset times, session cost. One-click `Summarize` and `Handoff`. Set up once with a short wizard. |
+| [**Pulse-caveman**](plugins/pulse-caveman) | Turn [caveman](https://github.com/JuliusBrussee/caveman) on with one press; see whether it is on, in which mode, and for how long. Shows inside the Pulse bar with Pulse 0.3.0 or later. |
 
-More Pulse-family plugins will join this list. Each installs on its own.
+More Pulse-family plugins will join this list. Each installs on its own, with
+`/plugin install <name>@maciejploskonka`.
 
 ## Install
 
